@@ -160,21 +160,29 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
     }
 
     if (id === "btn_edit_select") {
-      const { year, month } = currentYM();
-      const events = await getMonthEvents(interaction.guildId, year, month);
-      const menu   = buildSelectMenu(events, "select_edit_event", pick(lang, "編集する予定を選択", "Select event to edit"), lang);
-      if (!menu) return interaction.reply({ content: pick(lang, "編集できる予定がありません。", "No events available to edit."), ephemeral: true });
-      await interaction.reply({ content: pick(lang, "✏️ 編集する予定を選んでください：", "✏️ Select an event to edit:"), components: [menu], ephemeral: true });
-      sharedState.pendingEditInteractions.set(interaction.user.id, interaction);
-      return;
+      try {
+        const { year, month } = currentYM();
+        const events = await getMonthEvents(config.calendarId, year, month);
+        const menu   = buildSelectMenu(events, "select_edit_event", pick(lang, "編集する予定を選択", "Select event to edit"), lang);
+        if (!menu) return interaction.reply({ content: pick(lang, "編集できる予定がありません。", "No events available to edit."), ephemeral: true });
+        await interaction.reply({ content: pick(lang, "✏️ 編集する予定を選んでください：", "✏️ Select an event to edit:"), components: [menu], ephemeral: true });
+        sharedState.pendingEditInteractions.set(interaction.user.id, interaction);
+        return;
+      } catch (err) {
+        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), ephemeral: true });
+      }
     }
 
     if (id === "btn_delete_select") {
-      const { year, month } = currentYM();
-      const events = await getMonthEvents(interaction.guildId, year, month);
-      const menu   = buildSelectMenu(events, "select_delete_event", pick(lang, "削除する予定を選択", "Select event to delete"), lang);
-      if (!menu) return interaction.reply({ content: pick(lang, "削除できる予定がありません。", "No events available to delete."), ephemeral: true });
-      return interaction.reply({ content: pick(lang, "🗑️ 削除する予定を選んでください：", "🗑️ Select an event to delete:"), components: [menu], ephemeral: true });
+      try {
+        const { year, month } = currentYM();
+        const events = await getMonthEvents(config.calendarId, year, month);
+        const menu   = buildSelectMenu(events, "select_delete_event", pick(lang, "削除する予定を選択", "Select event to delete"), lang);
+        if (!menu) return interaction.reply({ content: pick(lang, "削除できる予定がありません。", "No events available to delete."), ephemeral: true });
+        return interaction.reply({ content: pick(lang, "🗑️ 削除する予定を選んでください：", "🗑️ Select an event to delete:"), components: [menu], ephemeral: true });
+      } catch (err) {
+        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), ephemeral: true });
+      }
     }
 
     if (id.startsWith("btn_confirm_delete_")) {
@@ -194,7 +202,7 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
         await interaction.editReply({ content: fmtCd(msg, 5, lang), components: [] });
         startCountdownDelete(interaction, msg, 5, lang);
         const { year, month } = currentYM();
-        const events = await getMonthEvents(interaction.guildId, year, month);
+        const events = await getMonthEvents(config.calendarId, year, month);
         await scheduler.updateBoth(interaction.guildId, config, events, year, month);
         saveState(interaction.guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
       } catch (err) {
