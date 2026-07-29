@@ -125,7 +125,7 @@ function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = tr
 
     nextStr = nextLines.join("\n");
   }
-  const jst = d => new Date(d).toLocaleString(lang === "en" ? "en-US" : "ja-JP", { timeZone:"Asia/Tokyo", month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" });
+  const jst = d => new Date(d).toLocaleString(lang === "en" ? "en-US" : "ja-JP", { timeZone:"Asia/Tokyo", month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", second:"2-digit" });
 
   return new EmbedBuilder()
     .setColor(online ? 0x2b2d31 : 0x747f8d)
@@ -134,9 +134,9 @@ function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = tr
       `${pick(lang, "📆 今月", "📆 This month")}  **${events.length}${pick(lang, "件", "") }**  ${pick(lang, "残り", "Remaining")} **${upcoming.length}${pick(lang, "件", "") }**\n` +
       `${pick(lang, "⏭️ 直近", "⏭️ Next")}  ${nextStr}\n` +
       `${pick(lang, "🔃 最終同期", "🔃 Last sync")}  ${lastUpdated ? jst(lastUpdated) : pick(lang, "未取得", "Not synced")}\n` +
-      `${pick(lang, "🔐 操作権限", "🔐 Permission")}  \`${botRoleName || "CalendarOperator"}\` ${pick(lang, "ロール保持者・管理者", "role holders and administrators")}\n` +
-      `${pick(lang, "🧩 システムバージョン", "🧩 System version")}  \`v${appVersion}\``
-    );
+      `${pick(lang, "🔐 操作権限", "🔐 Permission")}  \`${botRoleName || "CalendarOperator"}\` ${pick(lang, "ロール保持者・管理者", "role holders and administrators")}`
+    )
+    .setFooter({ text: pick(lang, `🧩 システムバージョン v${appVersion}`, `🧩 System version v${appVersion}`) });
 }
 
 function buildActionButtons(lang = "ja") {

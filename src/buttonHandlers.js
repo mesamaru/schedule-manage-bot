@@ -21,8 +21,8 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
       try {
         const { year, month } = currentYM();
         const events = await getMonthEvents(config.calendarId, year, month);
-        await scheduler.updateBoth(interaction.guildId, config, events, year, month);
         saveState(interaction.guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
+        await scheduler.updateBoth(interaction.guildId, config, events, year, month);
         const msg = pick(lang, "✅ カレンダーとステータスを更新しました！", "✅ Calendar and status updated.");
         await interaction.editReply({ content: fmtCd(msg, 5, lang) });
         startCountdownDelete(interaction, msg, 5, lang);
@@ -209,8 +209,8 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
         startCountdownDelete(interaction, msg, 5, lang);
         const { year, month } = currentYM();
         const events = await getMonthEvents(config.calendarId, year, month);
-        await scheduler.updateBoth(interaction.guildId, config, events, year, month);
         saveState(interaction.guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
+        await scheduler.updateBoth(interaction.guildId, config, events, year, month);
       } catch (err) {
         const emsg = pick(lang, `❌ 削除失敗: ${err.message}`, `❌ Delete failed: ${err.message}`);
         await interaction.editReply({ content: fmtCd(emsg, 8, lang), components: [] });

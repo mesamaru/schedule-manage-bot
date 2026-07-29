@@ -97,8 +97,8 @@ function createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, g
     try {
       const { year, month } = currentYM();
       const events = await getMonthEvents(calendarId, year, month);
-      await scheduler.updateBoth(interaction.guildId, config, events, year, month);
       saveStateSafe(interaction.guildId, hashEvents(events));
+      await scheduler.updateBoth(interaction.guildId, config, events, year, month);
       const serviceEmail = process.env.GOOGLE_CLIENT_EMAIL || "（未設定）";
       await interaction.editReply({
         content:

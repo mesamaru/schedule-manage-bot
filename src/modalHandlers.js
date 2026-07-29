@@ -48,8 +48,8 @@ function createModalHandler({ loadConfig, saveState, scheduler, runtime, sharedS
         });
         const { year, month } = currentYM();
         const events = await require("./calendar").getMonthEvents(config.calendarId, year, month);
-        await scheduler.updateBoth(interaction.guildId, config, events, year, month);
         saveState(interaction.guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
+        await scheduler.updateBoth(interaction.guildId, config, events, year, month);
         sendAuditLog(client, "追加", interaction, { title, dateStr, timeStr: startTime ? `${startTime}~${endTime || ""}` : (lang === "en" ? "All day" : "終日"), desc: description }, config);
       } catch (err) {
         const emsg = pick(lang, `❌ 追加失敗: ${err.message}`, `❌ Add failed: ${err.message}`);
@@ -79,8 +79,8 @@ function createModalHandler({ loadConfig, saveState, scheduler, runtime, sharedS
         });
         const { year, month } = currentYM();
         const events = await require("./calendar").getMonthEvents(config.calendarId, year, month);
-        await scheduler.updateBoth(interaction.guildId, config, events, year, month);
         saveState(interaction.guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
+        await scheduler.updateBoth(interaction.guildId, config, events, year, month);
         sendAuditLog(client, "変更", interaction, { title, dateStr, timeStr: startTime ? `${startTime}~${endTime || ""}` : (lang === "en" ? "All day" : "終日"), desc: description }, config);
       } catch (err) {
         const emsg = pick(lang, `❌ 更新失敗: ${err.message}`, `❌ Update failed: ${err.message}`);
