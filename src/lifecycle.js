@@ -1,6 +1,7 @@
 const { buildStatusEmbed } = require("./embed");
 const { loadState } = require("./storage");
 const { getLang } = require("./i18n");
+const { version: appVersion = "unknown" } = require("./package.json");
 
 function createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler, runtime, registerGlobalCommands, saveState }) {
   const { getAndIncrementStartupCount, fmtTimestamp, sendSystemLog } = runtime;
@@ -46,11 +47,12 @@ function createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler
       const startupCount = getAndIncrementStartupCount(require("fs"), require("path"));
       const ts           = fmtTimestamp();
       console.log("========================================");
-      console.log(`  gcal-discord-bot v7 起動完了（マルチギルド）`);
+      console.log(`  gcal-discord-bot v${appVersion} 起動完了（マルチギルド）`);
       console.log(`  ログイン: ${client.user.tag}`);
       console.log(`  スケジュール: ${scheduler.cronSchedule}`);
       console.log(`  起動回数: ${startupCount} 回目 | ${ts}`);
       console.log(`  PID: ${process.pid}`);
+      console.log(`  CWD: ${process.cwd()}`);
       console.log("========================================");
       await registerGlobalCommands();
       const guildIds = getAllGuildIds();

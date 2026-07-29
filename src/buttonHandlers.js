@@ -17,7 +17,7 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
     const id = interaction.customId;
 
     if (id === "btn_refresh") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         const { year, month } = currentYM();
         const events = await getMonthEvents(config.calendarId, year, month);
@@ -46,12 +46,12 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
         if (interaction.message.flags.has(MessageFlags.Ephemeral)) {
           return interaction.update({ embeds: [embed], components: [buttons] });
         } else {
-          await interaction.deferReply({ ephemeral: true });
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           return interaction.editReply({ embeds: [embed], components: [buttons] });
         }
       } catch (err) {
         if (interaction.deferred || interaction.replied) return interaction.editReply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`) });
-        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), ephemeral: true });
+        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), flags: MessageFlags.Ephemeral });
       }
     }
 
@@ -156,7 +156,7 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
     }
 
     if (!hasPermission(interaction.member, config.operatorRoleName)) {
-      return interaction.reply({ content: pick(lang, `🔐 この操作には \`${config.operatorRoleName}\` ロールまたは管理者権限が必要です。`, `🔐 This action requires the \`${config.operatorRoleName}\` role or administrator permission.`), ephemeral: true });
+      return interaction.reply({ content: pick(lang, `🔐 この操作には \`${config.operatorRoleName}\` ロールまたは管理者権限が必要です。`, `🔐 This action requires the \`${config.operatorRoleName}\` role or administrator permission.`), flags: MessageFlags.Ephemeral });
     }
 
     if (id === "btn_add") {
@@ -168,14 +168,14 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
         const { year, month } = currentYM();
         const events = await getMonthEvents(config.calendarId, year, month);
         const menu   = buildSelectMenu(events, "select_edit_event", pick(lang, "編集する予定を選択", "Select event to edit"), lang);
-        if (!menu) return interaction.reply({ content: pick(lang, "編集できる予定がありません。", "No events available to edit."), ephemeral: true });
-        await interaction.reply({ content: pick(lang, "✏️ 編集する予定を選んでください：", "✏️ Select an event to edit:"), components: [menu], ephemeral: true });
+        if (!menu) return interaction.reply({ content: pick(lang, "編集できる予定がありません。", "No events available to edit."), flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: pick(lang, "✏️ 編集する予定を選んでください：", "✏️ Select an event to edit:"), components: [menu], flags: MessageFlags.Ephemeral });
         const pendingKey = getPendingEditKey(interaction);
         sharedState.pendingEditInteractions.set(pendingKey, interaction);
         sharedState.pendingEditEvents.set(pendingKey, new Map(events.map((event) => [event.id, event])));
         return;
       } catch (err) {
-        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), ephemeral: true });
+        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), flags: MessageFlags.Ephemeral });
       }
     }
 
@@ -184,10 +184,10 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
         const { year, month } = currentYM();
         const events = await getMonthEvents(config.calendarId, year, month);
         const menu   = buildSelectMenu(events, "select_delete_event", pick(lang, "削除する予定を選択", "Select event to delete"), lang);
-        if (!menu) return interaction.reply({ content: pick(lang, "削除できる予定がありません。", "No events available to delete."), ephemeral: true });
-        return interaction.reply({ content: pick(lang, "🗑️ 削除する予定を選んでください：", "🗑️ Select an event to delete:"), components: [menu], ephemeral: true });
+        if (!menu) return interaction.reply({ content: pick(lang, "削除できる予定がありません。", "No events available to delete."), flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: pick(lang, "🗑️ 削除する予定を選んでください：", "🗑️ Select an event to delete:"), components: [menu], flags: MessageFlags.Ephemeral });
       } catch (err) {
-        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), ephemeral: true });
+        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), flags: MessageFlags.Ephemeral });
       }
     }
 
@@ -236,7 +236,7 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
       return interaction.update({ content: nc, components: nco });
     }
     if (!hasPermission(interaction.member, config.operatorRoleName)) {
-      return interaction.reply({ content: pick(lang, `🔐 この操作には \`${config.operatorRoleName}\` ロールまたは管理者権限が必要です。`, `🔐 This action requires the \`${config.operatorRoleName}\` role or administrator permission.`), ephemeral: true });
+      return interaction.reply({ content: pick(lang, `🔐 この操作には \`${config.operatorRoleName}\` ロールまたは管理者権限が必要です。`, `🔐 This action requires the \`${config.operatorRoleName}\` role or administrator permission.`), flags: MessageFlags.Ephemeral });
     }
     if (interaction.customId === "select_edit_event") {
       const eventId = interaction.values[0];
@@ -247,12 +247,12 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
         if (!event) {
           return interaction.reply({
             content: pick(lang, "❌ 編集対象の情報が見つかりません。もう一度編集を開いてください。", "❌ Event details are no longer available. Please open edit again."),
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
         }
         return interaction.showModal(require("./modals").buildEditModal(event, lang));
       } catch (err) {
-        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), ephemeral: true });
+        return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), flags: MessageFlags.Ephemeral });
       }
     }
     if (interaction.customId === "select_delete_event") {

@@ -1,6 +1,7 @@
 const { addEvent, updateEvent, hashEvents } = require("./calendar");
 const { buildNoticeManageComponents } = require("./embed");
 const { resetFiredForEvent } = require("./storage");
+const { MessageFlags } = require("discord.js");
 const { getLang, pick } = require("./i18n");
 
 function createModalHandler({ loadConfig, saveState, scheduler, runtime, sharedState, client }) {
@@ -13,7 +14,7 @@ function createModalHandler({ loadConfig, saveState, scheduler, runtime, sharedS
   async function handleModal(interaction) {
     const config = loadConfig(interaction.guildId);
     const lang = getLang(config);
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const title       = interaction.fields.getTextInputValue("title");
     const dateStr     = interaction.fields.getTextInputValue("date");
     const startTime   = normalizeTime(interaction.fields.getTextInputValue("start_time"));

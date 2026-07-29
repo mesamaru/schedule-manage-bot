@@ -3,7 +3,7 @@
  * /add スラッシュコマンド + モーダルの定義と処理
  */
 
-const { SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require("discord.js");
+const { SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, MessageFlags } = require("discord.js");
 const { addEvent } = require("./calendar");
 
 // スラッシュコマンド定義
@@ -74,7 +74,7 @@ async function handleAddCommand(interaction) {
  * モーダルが送信されたときの処理
  */
 async function handleModalSubmit(interaction) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const title = interaction.fields.getTextInputValue("event_title");
   const dateStr = interaction.fields.getTextInputValue("event_date");

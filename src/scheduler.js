@@ -9,6 +9,16 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
   const guildRunning = new Map();
   const cronSchedule = config.cronSchedule || process.env.CRON_SCHEDULE || "*/5 * * * *";
 
+  function summarizeRunError(err, calendarId) {
+    const code = err?.code || err?.status || err?.response?.status;
+    const reason = err?.errors?.[0]?.reason || err?.response?.data?.error?.errors?.[0]?.reason;
+    const message = err?.errors?.[0]?.message || err?.message || "unknown error";
+    if (code === 404 && reason === "notFound") {
+      return `Google Calendar not found or not shared (calendarId: ${calendarId}). Check calendar_id and service-account sharing.`;
+    }
+    return `${message} (code=${code ?? "n/a"}${reason ? `, reason=${reason}` : ""})`;
+  }
+
   async function upsertCalendarMessage(guildId, guildConfig, events, year, month) {
     const lang = getLang(guildConfig);
     const channel = await client.channels.fetch(guildConfig.channelId);
@@ -73,7 +83,13 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
       }
       await checkAndFireNotices(client, guildId, guildConfig);
     } catch (err) {
-      console.error(`[Run][${guildId}] エラー:`, err);
+      const syncedAt = new Date().toISOString();
+      saveState(guildId, { updatedAt: syncedAt });
+      // Keep status embed fresh even if calendar fetch fails, so operators can notice current bot state/version.
+      await upsertStatusMessage(guildId, guildConfig, []).catch((statusErr) => {
+        console.error(`[Run][${guildId}] Status update failed: ${statusErr.message}`);
+      });
+      console.error(`[Run][${guildId}] ${summarizeRunError(err, guildConfig.calendarId)}`);
     } finally {
       guildRunning.set(guildId, false);
     }
