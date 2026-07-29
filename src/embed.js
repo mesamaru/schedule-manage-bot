@@ -136,8 +136,7 @@ function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = tr
       `${pick(lang, "🔃 最終同期", "🔃 Last sync")}  ${lastUpdated ? jst(lastUpdated) : pick(lang, "未取得", "Not synced")}\n` +
       `${pick(lang, "🔐 操作権限", "🔐 Permission")}  \`${botRoleName || "CalendarOperator"}\` ${pick(lang, "ロール保持者・管理者", "role holders and administrators")}\n` +
       `${pick(lang, "🧩 バージョン", "🧩 Version")}  \`v${appVersion}\``
-    )
-    .setFooter({ text: pick(lang, `🧩 システムバージョン v${appVersion}`, `🧩 System version v${appVersion}`) });
+    );
 }
 
 function buildActionButtons(lang = "ja") {
