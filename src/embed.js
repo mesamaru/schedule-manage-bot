@@ -5,7 +5,7 @@ const {
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
   RoleSelectMenuBuilder, UserSelectMenuBuilder,
 } = require("discord.js");
-const { version: appVersion = "unknown" } = require("./package.json");
+const { appVersion } = require("./version");
 const { formatEvent } = require("./calendar");
 const { getNoticesForEvent } = require("./storage");
 const { pick } = require("./i18n");
@@ -134,7 +134,8 @@ function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = tr
       `${pick(lang, "📆 今月", "📆 This month")}  **${events.length}${pick(lang, "件", "") }**  ${pick(lang, "残り", "Remaining")} **${upcoming.length}${pick(lang, "件", "") }**\n` +
       `${pick(lang, "⏭️ 直近", "⏭️ Next")}  ${nextStr}\n` +
       `${pick(lang, "🔃 最終同期", "🔃 Last sync")}  ${lastUpdated ? jst(lastUpdated) : pick(lang, "未取得", "Not synced")}\n` +
-      `${pick(lang, "🔐 操作権限", "🔐 Permission")}  \`${botRoleName || "CalendarOperator"}\` ${pick(lang, "ロール保持者・管理者", "role holders and administrators")}`
+      `${pick(lang, "🔐 操作権限", "🔐 Permission")}  \`${botRoleName || "CalendarOperator"}\` ${pick(lang, "ロール保持者・管理者", "role holders and administrators")}\n` +
+      `${pick(lang, "🧩 バージョン", "🧩 Version")}  \`v${appVersion}\``
     )
     .setFooter({ text: pick(lang, `🧩 システムバージョン v${appVersion}`, `🧩 System version v${appVersion}`) });
 }

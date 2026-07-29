@@ -1,9 +1,14 @@
 {
   "name": "schedule-manage-bot",
   "private": true,
+  "version": "8.0.0",
   "scripts": {
     "start": "node src/index.js",
-    "update": "node scripts/update.mjs"
+    "update": "node scripts/update.mjs",
+    "version:set": "node scripts/version.mjs set",
+    "version:patch": "node scripts/version.mjs patch",
+    "version:minor": "node scripts/version.mjs minor",
+    "version:major": "node scripts/version.mjs major"
   },
   "dependencies": {
     "discord.js": "^14.26.4",

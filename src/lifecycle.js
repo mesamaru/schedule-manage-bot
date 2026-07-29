@@ -1,7 +1,7 @@
 const { buildStatusEmbed } = require("./embed");
 const { loadState } = require("./storage");
 const { getLang } = require("./i18n");
-const { version: appVersion = "unknown" } = require("./package.json");
+const { appVersion } = require("./version");
 
 function createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler, runtime, registerGlobalCommands, saveState }) {
   const { getAndIncrementStartupCount, fmtTimestamp, sendSystemLog } = runtime;
