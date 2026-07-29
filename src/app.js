@@ -31,7 +31,7 @@ function createApp() {
     if (!config) {
       if (!interaction.replied && !interaction.deferred) {
         const lang = interaction.locale?.toLowerCase().startsWith("en") ? "en" : "ja";
-        return interaction.reply({ content: lang === "en" ? "❌ This server is not set up. Ask an administrator to run `/setup` first." : "❌ このサーバーはセットアップされていません。管理者に `/setup` の実行を依頼してください。", ephemeral: true }).catch(() => {});
+        return interaction.reply({ content: lang === "en" ? "❌ This server is not set up. Ask an administrator to run `/setup` first." : "❌ このサーバーはセットアップされていません。管理者に `/setup` の実行を依頼してください。", flags: MessageFlags.Ephemeral }).catch(() => {});
       }
       return;
     }

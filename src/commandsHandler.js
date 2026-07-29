@@ -1,4 +1,4 @@
-const { REST, Routes, PermissionFlagsBits, SlashCommandBuilder } = require("discord.js");
+const { REST, Routes, PermissionFlagsBits, SlashCommandBuilder, MessageFlags } = require("discord.js");
 const { getMonthEvents, hashEvents } = require("./calendar");
 const { getLang, pick } = require("./i18n");
 
@@ -72,7 +72,7 @@ function createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, g
   const { currentYM, sendSystemLog, isLogNotifyEnabled } = runtime;
 
   async function handleSetup(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const setupLang = interaction.locale?.toLowerCase().startsWith("en") ? "en" : "ja";
     const channel       = interaction.options.getChannel("channel");
     const calendarId    = interaction.options.getString("calendar_id");
@@ -138,22 +138,22 @@ function createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, g
     const config = loadConfig(interaction.guildId);
     if (!config) {
       const lang = interaction.locale?.toLowerCase().startsWith("en") ? "en" : "ja";
-      return interaction.reply({ content: lang === "en" ? "ℹ️ This server is not set up yet." : "ℹ️ このサーバーはまだセットアップされていません。", ephemeral: true });
+      return interaction.reply({ content: lang === "en" ? "ℹ️ This server is not set up yet." : "ℹ️ このサーバーはまだセットアップされていません。", flags: MessageFlags.Ephemeral });
     }
     deleteConfig(interaction.guildId);
-    return interaction.reply({ content: getLang(config) === "en" ? "✅ Removed this server's setup." : "✅ このサーバーの設定を削除しました。", ephemeral: true });
+    return interaction.reply({ content: getLang(config) === "en" ? "✅ Removed this server's setup." : "✅ このサーバーの設定を削除しました。", flags: MessageFlags.Ephemeral });
   }
 
   async function handleLogNotify(interaction) {
     const config = loadConfig(interaction.guildId);
     if (!config) {
       const lang = interaction.locale?.toLowerCase().startsWith("en") ? "en" : "ja";
-      return interaction.reply({ content: lang === "en" ? "❌ This server is not set up. Please run `/setup` first." : "❌ このサーバーはセットアップされていません。先に `/setup` を実行してください。", ephemeral: true });
+      return interaction.reply({ content: lang === "en" ? "❌ This server is not set up. Please run `/setup` first." : "❌ このサーバーはセットアップされていません。先に `/setup` を実行してください。", flags: MessageFlags.Ephemeral });
     }
     const category = interaction.options.getString("category", true);
     const state = interaction.options.getString("state", true);
     if (state === "on" && !config.logChannelId) {
-      return interaction.reply({ content: getLang(config) === "en" ? "❌ Log channel is not set. Configure `log_channel` in `/setup` first." : "❌ ログチャンネルが未設定です。`/setup` の `log_channel` を設定してください。", ephemeral: true });
+      return interaction.reply({ content: getLang(config) === "en" ? "❌ Log channel is not set. Configure `log_channel` in `/setup` first." : "❌ ログチャンネルが未設定です。`/setup` の `log_channel` を設定してください。", flags: MessageFlags.Ephemeral });
     }
     if (category === "all") config.logEnabled = (state === "on");
     else {
@@ -171,7 +171,7 @@ function createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, g
       content: getLang(config) === "en"
         ? `✅ Log notification (${labels[category]}) set to **${state.toUpperCase()}**.`
         : `✅ ログ通知（${labels[category]}）を **${state.toUpperCase()}** に設定しました。`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -179,14 +179,14 @@ function createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, g
     const config = loadConfig(interaction.guildId);
     if (!config) {
       const lang = interaction.locale?.toLowerCase().startsWith("en") ? "en" : "ja";
-      return interaction.reply({ content: lang === "en" ? "❌ This server is not set up. Please run `/setup` first." : "❌ このサーバーはセットアップされていません。先に `/setup` を実行してください。", ephemeral: true });
+      return interaction.reply({ content: lang === "en" ? "❌ This server is not set up. Please run `/setup` first." : "❌ このサーバーはセットアップされていません。先に `/setup` を実行してください。", flags: MessageFlags.Ephemeral });
     }
     const selected = interaction.options.getString("lang", true);
     config.language = selected;
     saveConfig(interaction.guildId, config);
     return interaction.reply({
       content: selected === "en" ? "✅ Bot language set to **English**." : "✅ Botの表示言語を **日本語** に設定しました。",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
