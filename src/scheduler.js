@@ -61,10 +61,14 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
       const events  = await getMonthEvents(guildConfig.calendarId, year, month);
       const newHash = hashEvents(events);
       const state   = loadState(guildId);
+      const syncedAt = new Date().toISOString();
       if (isFirst || !state.lastHash || force || state.lastHash !== newHash) {
+        // Save latest sync timestamp first so status embed always shows the current run time.
+        saveState(guildId, { lastHash: newHash, updatedAt: syncedAt });
         await updateBoth(guildId, guildConfig, events, year, month);
-        saveState(guildId, { lastHash: newHash, updatedAt: new Date().toISOString() });
       } else {
+        // Even when no event diff exists, keep the "last sync" timestamp fresh.
+        saveState(guildId, { updatedAt: syncedAt });
         await upsertStatusMessage(guildId, guildConfig, events);
       }
       await checkAndFireNotices(client, guildId, guildConfig);
