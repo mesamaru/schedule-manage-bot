@@ -6,6 +6,10 @@ const { getLang, pick } = require("./i18n");
 function createModalHandler({ loadConfig, saveState, scheduler, runtime, sharedState, client }) {
   const { normalizeTime, fmtCd, startCountdownDelete, sendAuditLog, currentYM, formatEventLocal } = runtime;
 
+  function getPendingEditKey(interaction) {
+    return `${interaction.guildId}:${interaction.user.id}`;
+  }
+
   async function handleModal(interaction) {
     const config = loadConfig(interaction.guildId);
     const lang = getLang(config);
@@ -54,8 +58,13 @@ function createModalHandler({ loadConfig, saveState, scheduler, runtime, sharedS
     }
 
     if (interaction.customId.startsWith("modal_edit_")) {
-      const prev = sharedState.pendingEditInteractions.get(interaction.user.id);
-      if (prev) { prev.deleteReply().catch(() => {}); sharedState.pendingEditInteractions.delete(interaction.user.id); }
+      const pendingKey = getPendingEditKey(interaction);
+      const prev = sharedState.pendingEditInteractions.get(pendingKey);
+      if (prev) {
+        prev.deleteReply().catch(() => {});
+        sharedState.pendingEditInteractions.delete(pendingKey);
+      }
+      sharedState.pendingEditEvents.delete(pendingKey);
       const eventId = interaction.customId.replace("modal_edit_", "");
       try {
         await updateEvent(config.calendarId, eventId, { title, dateStr, startTime, endTime, description });

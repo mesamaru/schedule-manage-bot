@@ -7,6 +7,10 @@ const { getLang, pick } = require("./i18n");
 function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime, sharedState }) {
   const { hasPermission, currentYM, fmtCd, startCountdownDelete, sendAuditLog, formatEventLocal } = runtime;
 
+  function getPendingEditKey(interaction) {
+    return `${interaction.guildId}:${interaction.user.id}`;
+  }
+
   async function handleButton(interaction) {
     const config = loadConfig(interaction.guildId);
     const lang = getLang(config);
@@ -166,7 +170,9 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
         const menu   = buildSelectMenu(events, "select_edit_event", pick(lang, "編集する予定を選択", "Select event to edit"), lang);
         if (!menu) return interaction.reply({ content: pick(lang, "編集できる予定がありません。", "No events available to edit."), ephemeral: true });
         await interaction.reply({ content: pick(lang, "✏️ 編集する予定を選んでください：", "✏️ Select an event to edit:"), components: [menu], ephemeral: true });
-        sharedState.pendingEditInteractions.set(interaction.user.id, interaction);
+        const pendingKey = getPendingEditKey(interaction);
+        sharedState.pendingEditInteractions.set(pendingKey, interaction);
+        sharedState.pendingEditEvents.set(pendingKey, new Map(events.map((event) => [event.id, event])));
         return;
       } catch (err) {
         return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), ephemeral: true });
@@ -235,7 +241,15 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
     if (interaction.customId === "select_edit_event") {
       const eventId = interaction.values[0];
       try {
-        const event = await getEvent(config.calendarId, eventId);
+        const pendingKey = getPendingEditKey(interaction);
+        const pendingEvents = sharedState.pendingEditEvents.get(pendingKey);
+        const event = pendingEvents?.get(eventId);
+        if (!event) {
+          return interaction.reply({
+            content: pick(lang, "❌ 編集対象の情報が見つかりません。もう一度編集を開いてください。", "❌ Event details are no longer available. Please open edit again."),
+            ephemeral: true,
+          });
+        }
         return interaction.showModal(require("./modals").buildEditModal(event, lang));
       } catch (err) {
         return interaction.reply({ content: pick(lang, `❌ 取得失敗: ${err.message}`, `❌ Fetch failed: ${err.message}`), ephemeral: true });

@@ -437,6 +437,26 @@ GOOGLE_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVA
 node src/index.js
 ```
 
+### 更新
+
+Pterodactyl の Node.js Generic など、サーバー上から直接更新したい場合は以下を実行します。
+
+```bash
+npm run update
+```
+
+- Pterodactyl の console では shell を直接開いていないため、Bot プロセスに `update` か `npm run update` を入力すると更新が始まります
+- GitHub の latest release を取得して上書き更新します
+- release が未作成の場合は既定ブランチの最新スナップショットにフォールバックします
+- `.env`、`data/`、`logs/`、`node_modules/` は保持したまま更新します
+- 更新後に `npm install --omit=dev` を自動実行します
+
+起動コマンドは以下です。
+
+```bash
+npm start
+```
+
 ---
 
 ## トラブルシューティング

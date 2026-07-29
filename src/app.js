@@ -15,7 +15,10 @@ const runtime = require("./runtime");
 function createApp() {
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
   const scheduler = createScheduler({ client, getAllGuildIds, loadConfig, config: { cronSchedule: process.env.CRON_SCHEDULE || "*/5 * * * *" } });
-  const sharedState = { pendingEditInteractions: new Map() };
+  const sharedState = {
+    pendingEditInteractions: new Map(),
+    pendingEditEvents: new Map(),
+  };
 
   const commands = createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, getAllGuildIds, scheduler, runtime });
   const buttons  = createButtonHandler({ client, loadConfig, saveState, scheduler, runtime, sharedState });
