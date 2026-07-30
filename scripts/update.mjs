@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import { pipeline } from 'node:stream/promises';
@@ -10,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
+const updateTempBase = process.env.UPDATE_TMPDIR || process.env.TMPDIR || path.join(projectRoot, '.update-tmp');
 
 const repoSlug = process.env.GITHUB_REPOSITORY || 'mesamaru/schedule-manage-bot';
 const apiBase = `https://api.github.com/repos/${repoSlug}`;
@@ -44,22 +44,30 @@ async function main() {
     console.log(`[update] Latest release not found. Falling back to ${defaultBranch}.`);
   }
 
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schedule-manage-bot-update-'));
-  const archivePath = path.join(tempRoot, 'release.tar.gz');
-  const extractRoot = path.join(tempRoot, 'extract');
+  await fs.mkdir(updateTempBase, { recursive: true });
 
-  await fs.mkdir(extractRoot, { recursive: true });
-  await downloadToFile(archiveUrl, archivePath);
-  run('tar', ['-xzf', archivePath, '-C', extractRoot], 'archive extraction failed');
+  let tempRoot;
+  try {
+    tempRoot = await fs.mkdtemp(path.join(updateTempBase, 'schedule-manage-bot-update-'));
+    const archivePath = path.join(tempRoot, 'release.tar.gz');
+    const extractRoot = path.join(tempRoot, 'extract');
 
-  const extractedRoot = await getSingleExtractedRoot(extractRoot);
-  await syncProject(extractedRoot, projectRoot);
+    await fs.mkdir(extractRoot, { recursive: true });
+    await downloadToFile(archiveUrl, archivePath);
+    run('tar', ['-xzf', archivePath, '-C', extractRoot], 'archive extraction failed');
 
-  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  run(npmCommand, ['install', '--omit=dev'], 'npm install failed', { shell: process.platform === 'win32' });
+    const extractedRoot = await getSingleExtractedRoot(extractRoot);
+    await syncProject(extractedRoot, projectRoot);
 
-  await fs.rm(tempRoot, { recursive: true, force: true });
-  console.log(`[update] Update completed from ${sourceLabel}.`);
+    const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    run(npmCommand, ['install', '--omit=dev'], 'npm install failed', { shell: process.platform === 'win32' });
+
+    console.log(`[update] Update completed from ${sourceLabel}.`);
+  } finally {
+    if (tempRoot) {
+      await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 async function syncProject(sourceRoot, targetRoot) {
