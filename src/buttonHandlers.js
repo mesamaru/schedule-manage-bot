@@ -42,7 +42,7 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
       try {
         const events  = await getMonthEvents(config.calendarId, year, month);
         const embed   = buildCalendarEmbed(interaction.guildId, events, year, month, lang);
-        const buttons = buildCalendarButtons(year, month, lang);
+        const buttons = buildCalendarButtons(year, month, lang, { showEdit: true });
         if (interaction.message.flags.has(MessageFlags.Ephemeral)) {
           return interaction.update({ embeds: [embed], components: [buttons] });
         } else {
@@ -163,9 +163,17 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
       return interaction.showModal(require("./modals").buildAddModal(new Date().toISOString().substring(0, 10), lang));
     }
 
-    if (id === "btn_edit_select") {
+    if (id === "btn_edit_select" || id.startsWith("btn_edit_select_")) {
       try {
-        const { year, month } = currentYM();
+        let year;
+        let month;
+        if (id.startsWith("btn_edit_select_")) {
+          const parts = id.split("_");
+          year = parseInt(parts[3]);
+          month = parseInt(parts[4]);
+        } else {
+          ({ year, month } = currentYM());
+        }
         const events = await getMonthEvents(config.calendarId, year, month);
         const menu   = buildSelectMenu(events, "select_edit_event", pick(lang, "編集する予定を選択", "Select event to edit"), lang);
         if (!menu) return interaction.reply({ content: pick(lang, "編集できる予定がありません。", "No events available to edit."), flags: MessageFlags.Ephemeral });
@@ -179,9 +187,17 @@ function createButtonHandler({ client, loadConfig, saveState, scheduler, runtime
       }
     }
 
-    if (id === "btn_delete_select") {
+    if (id === "btn_delete_select" || id.startsWith("btn_delete_select_")) {
       try {
-        const { year, month } = currentYM();
+        let year;
+        let month;
+        if (id.startsWith("btn_delete_select_")) {
+          const parts = id.split("_");
+          year = parseInt(parts[3]);
+          month = parseInt(parts[4]);
+        } else {
+          ({ year, month } = currentYM());
+        }
         const events = await getMonthEvents(config.calendarId, year, month);
         const menu   = buildSelectMenu(events, "select_delete_event", pick(lang, "削除する予定を選択", "Select event to delete"), lang);
         if (!menu) return interaction.reply({ content: pick(lang, "削除できる予定がありません。", "No events available to delete."), flags: MessageFlags.Ephemeral });

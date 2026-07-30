@@ -94,14 +94,21 @@ function buildCalendarEmbed(guildId, events, year, month, lang = "ja") {
   return embed;
 }
 
-function buildCalendarButtons(year, month, lang = "ja") {
+function buildCalendarButtons(year, month, lang = "ja", options = {}) {
+  const { showEdit = false } = options;
   const prev = month === 1  ? { y: year-1, m: 12 } : { y: year, m: month-1 };
   const next = month === 12 ? { y: year+1, m: 1  } : { y: year, m: month+1 };
-  return new ActionRowBuilder().addComponents(
+  const components = [
     new ButtonBuilder().setCustomId(`btn_prev_${prev.y}_${prev.m}`).setLabel(lang === "en" ? `◀ ${prev.m}` : `◀ ${prev.m}月`).setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`btn_next_${next.y}_${next.m}`).setLabel(lang === "en" ? `${next.m} ▶` : `${next.m}月 ▶`).setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("btn_refresh").setLabel(pick(lang, "🔄 更新", "🔄 Refresh")).setStyle(ButtonStyle.Primary),
-  );
+  ];
+  if (showEdit) {
+    components.push(
+      new ButtonBuilder().setCustomId(`btn_edit_select_${year}_${month}`).setLabel(pick(lang, "✏️ 編集", "✏️ Edit")).setStyle(ButtonStyle.Secondary),
+    );
+  }
+  return new ActionRowBuilder().addComponents(...components);
 }
 
 function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = true, lang = "ja") {
