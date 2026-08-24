@@ -1,6 +1,6 @@
 {
   "name": "gcal-discord-bot",
-  "version": "8.2.1",
+  "version": "8.3.0",
   "description": "Googleカレンダー ↔ Discord Bot",
   "main": "src/index.js",
   "scripts": {

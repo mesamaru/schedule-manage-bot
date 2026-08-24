@@ -1,7 +1,7 @@
 {
   "name": "schedule-manage-bot",
   "private": true,
-  "version": "8.2.1",
+  "version": "8.3.0",
   "scripts": {
     "start": "node src/index.js",
     "update": "node scripts/update.mjs",
