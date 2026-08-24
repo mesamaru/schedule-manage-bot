@@ -1,9 +1,38 @@
+const { RESTJSONErrorCodes } = require("discord.js");
 const { getMonthEvents, hashEvents } = require("./calendar");
 const { buildCalendarEmbed, buildCalendarButtons, buildStatusEmbed, buildActionButtons } = require("./embed");
 const { loadState, saveState } = require("./storage");
-const { checkAndFireNotices } = require("./notifier");
+const { checkAndFireNotices, sweepPendingDeletes } = require("./notifier");
 const { getLang } = require("./i18n");
 const { currentYM } = require("./runtime");
+
+// state.json を失ったときに備え、直近この件数のメッセージから自分の投稿を探して引き継ぐ
+const ADOPT_SCAN_LIMIT = 50;
+
+// Bot が常設で管理するメッセージ。marker は種類を見分けるためのボタン customId
+const MANAGED_MESSAGES = {
+  calendar: { stateKey: "calendarMessageId", marker: "btn_refresh", label: "Cal" },
+  status:   { stateKey: "statusMessageId",   marker: "btn_add",     label: "Status" },
+};
+
+function describeDiscordError(err) {
+  const code = err?.code ?? err?.status ?? "n/a";
+  return `${err?.message || "unknown error"} (code=${code})`;
+}
+
+/**
+ * Discord 上からメッセージが本当に消えている場合だけ true を返す。
+ * レート制限・5xx・ネットワーク断などの一時障害で作り直すと投稿が増え続けるため、
+ * 「作り直してよい」条件はこの 1 つに限定する。
+ */
+function isMessageGone(err) {
+  return err?.code === RESTJSONErrorCodes.UnknownMessage;
+}
+
+function hasMarker(message, marker) {
+  return (message.components || []).some(row =>
+    (row.components || []).some(component => component.customId === marker));
+}
 
 function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
   const guildRunning = new Map();
@@ -19,43 +48,100 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
     return `${message} (code=${code ?? "n/a"}${reason ? `, reason=${reason}` : ""})`;
   }
 
+  /** チャンネル内から、Bot 自身が投稿した該当種別のメッセージを新しい順に返す */
+  async function findManagedMessages(channel, marker) {
+    try {
+      const recent = await channel.messages.fetch({ limit: ADOPT_SCAN_LIMIT });
+      return [...recent.values()].filter(m => m.author?.id === client.user?.id && hasMarker(m, marker));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 常設メッセージを更新する。Discord 上から消えている場合のみ作り直す。
+   * state を失っていても、チャンネルに残っている自分の投稿を引き継いで重複投稿を防ぐ。
+   */
+  async function upsertManagedMessage(kind, guildId, channel, payload) {
+    const { stateKey, marker, label } = MANAGED_MESSAGES[kind];
+    const trackedId = loadState(guildId)[stateKey];
+
+    if (trackedId) {
+      try {
+        const msg = await channel.messages.fetch(trackedId);
+        await msg.edit(payload);
+        return msg;
+      } catch (err) {
+        if (!isMessageGone(err)) {
+          console.error(`[${label}][${guildId}] 更新失敗のためスキップ（再投稿しない）: ${describeDiscordError(err)}`);
+          return null;
+        }
+        console.warn(`[${label}][${guildId}] メッセージが存在しないため作り直します`);
+      }
+    }
+
+    for (const candidate of await findManagedMessages(channel, marker)) {
+      try {
+        await candidate.edit(payload);
+        saveState(guildId, { [stateKey]: candidate.id });
+        console.log(`[${label}][${guildId}] 既存メッセージを引き継ぎ: ${candidate.id}`);
+        return candidate;
+      } catch (err) {
+        if (!isMessageGone(err)) {
+          console.error(`[${label}][${guildId}] 既存メッセージの引き継ぎに失敗: ${describeDiscordError(err)}`);
+          return null;
+        }
+      }
+    }
+
+    const sent = await channel.send(payload);
+    saveState(guildId, { [stateKey]: sent.id });
+    console.log(`[${label}][${guildId}] 新規投稿: ${sent.id}`);
+    return sent;
+  }
+
   async function upsertCalendarMessage(guildId, guildConfig, events, year, month) {
     const lang = getLang(guildConfig);
     const channel = await client.channels.fetch(guildConfig.channelId);
-    const embed   = buildCalendarEmbed(guildId, events, year, month, lang);
-    const buttons = buildCalendarButtons(year, month, lang);
-    const state   = loadState(guildId);
-    if (state.calendarMessageId) {
-      try {
-        const msg = await channel.messages.fetch(state.calendarMessageId);
-        await msg.edit({ embeds: [embed], components: [buttons] });
-        return;
-      } catch { console.warn(`[Cal][${guildId}] 再作成`); }
-    }
-    const msg = await channel.send({ embeds: [embed], components: [buttons] });
-    saveState(guildId, { calendarMessageId: msg.id });
+    await upsertManagedMessage("calendar", guildId, channel, {
+      embeds: [buildCalendarEmbed(guildId, events, year, month, lang)],
+      components: [buildCalendarButtons(year, month, lang)],
+    });
   }
 
-  async function upsertStatusMessage(guildId, guildConfig, events) {
+  async function upsertStatusMessage(guildId, guildConfig, events, upcomingSource = events) {
     const lang = getLang(guildConfig);
     const channel = await client.channels.fetch(guildConfig.channelId);
     const state   = loadState(guildId);
-    const embed   = buildStatusEmbed(guildId, events, state.updatedAt, guildConfig.operatorRoleName, true, lang);
-    const buttons = buildActionButtons(lang);
-    if (state.statusMessageId) {
-      try {
-        const msg = await channel.messages.fetch(state.statusMessageId);
-        await msg.edit({ embeds: [embed], components: [buttons] });
-        return;
-      } catch { console.warn(`[Status][${guildId}] 再作成`); }
-    }
-    const msg = await channel.send({ embeds: [embed], components: [buttons] });
-    saveState(guildId, { statusMessageId: msg.id });
+    await upsertManagedMessage("status", guildId, channel, {
+      embeds: [buildStatusEmbed(guildId, events, state.updatedAt, guildConfig.operatorRoleName, true, lang, upcomingSource)],
+      components: [buildActionButtons(lang)],
+    });
   }
 
-  async function updateBoth(guildId, guildConfig, events, year, month) {
+  /** 過去に重複投稿されてしまった常設メッセージを片付ける（現行のものは残す） */
+  async function cleanupDuplicateMessages(guildId, guildConfig) {
+    const channel = await client.channels.fetch(guildConfig.channelId).catch(() => null);
+    if (!channel) return;
+    const state = loadState(guildId);
+    for (const { stateKey, marker, label } of Object.values(MANAGED_MESSAGES)) {
+      const keepId = state[stateKey];
+      if (!keepId) continue;
+      for (const msg of await findManagedMessages(channel, marker)) {
+        if (msg.id === keepId) continue;
+        try {
+          await msg.delete();
+          console.log(`[${label}][${guildId}] 重複メッセージを削除: ${msg.id}`);
+        } catch (err) {
+          console.warn(`[${label}][${guildId}] 重複メッセージの削除に失敗: ${describeDiscordError(err)}`);
+        }
+      }
+    }
+  }
+
+  async function updateBoth(guildId, guildConfig, events, year, month, upcomingSource = events) {
     await upsertCalendarMessage(guildId, guildConfig, events, year, month);
-    await upsertStatusMessage(guildId, guildConfig, events);
+    await upsertStatusMessage(guildId, guildConfig, events, upcomingSource);
   }
 
   async function run(guildId, guildConfig, isFirst = false, force = false) {
@@ -68,20 +154,25 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
     console.log(`[${ts}][${guildId}] チェック開始`);
     try {
       const { year, month } = currentYM();
+      const next    = month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 };
       const events  = await getMonthEvents(guildConfig.calendarId, year, month);
+      // 月末に「直近の予定」が消えないよう翌月分も見る。通知判定にも使い回す
+      const nextEvents = await getMonthEvents(guildConfig.calendarId, next.year, next.month).catch(() => []);
+      const horizon = [...events, ...nextEvents];
       const newHash = hashEvents(events);
       const state   = loadState(guildId);
       const syncedAt = new Date().toISOString();
       if (isFirst || !state.lastHash || force || state.lastHash !== newHash) {
         // Save latest sync timestamp first so status embed always shows the current run time.
         saveState(guildId, { lastHash: newHash, updatedAt: syncedAt });
-        await updateBoth(guildId, guildConfig, events, year, month);
+        await updateBoth(guildId, guildConfig, events, year, month, horizon);
       } else {
         // Even when no event diff exists, keep the "last sync" timestamp fresh.
         saveState(guildId, { updatedAt: syncedAt });
-        await upsertStatusMessage(guildId, guildConfig, events);
+        await upsertStatusMessage(guildId, guildConfig, events, horizon);
       }
-      await checkAndFireNotices(client, guildId, guildConfig);
+      if (isFirst) await cleanupDuplicateMessages(guildId, guildConfig).catch(() => {});
+      await checkAndFireNotices(client, guildId, guildConfig, horizon);
     } catch (err) {
       const syncedAt = new Date().toISOString();
       saveState(guildId, { updatedAt: syncedAt });
@@ -91,6 +182,8 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
       });
       console.error(`[Run][${guildId}] ${summarizeRunError(err, guildConfig.calendarId)}`);
     } finally {
+      // 再起動を挟んでも消えないよう、通知の自動削除は永続キューから掃除する
+      await sweepPendingDeletes(client, guildId).catch(() => {});
       guildRunning.set(guildId, false);
     }
   }
@@ -112,6 +205,7 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
     updateBoth,
     upsertCalendarMessage,
     upsertStatusMessage,
+    cleanupDuplicateMessages,
     startCron,
   };
 }

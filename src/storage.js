@@ -25,7 +25,30 @@ function write(guildId, file, data) {
 
 // ── state ──────────────────────────────────────────────
 function loadState(guildId)          { return read(guildId, "state.json"); }
-function saveState(guildId, partial) { write(guildId, "state.json", { ...loadState(guildId), ...partial, updatedAt: new Date().toISOString() }); }
+// updatedAt を明示的に渡された場合はそれを尊重する（渡されなければ現在時刻）
+function saveState(guildId, partial) { write(guildId, "state.json", { ...loadState(guildId), ...partial, updatedAt: partial?.updatedAt || new Date().toISOString() }); }
+
+// ── 予約削除キュー ─────────────────────────────────────
+// 通知メッセージの自動削除は setTimeout だと再起動で失われるため state に永続化する
+// 構造: state.pendingDeletes = [ { channelId, messageId, deleteAt } ]
+function addPendingDelete(guildId, entry) {
+  const state = loadState(guildId);
+  const queue = Array.isArray(state.pendingDeletes) ? state.pendingDeletes : [];
+  queue.push(entry);
+  // 「最終同期」の表示を汚さないよう updatedAt は据え置く
+  saveState(guildId, { pendingDeletes: queue, updatedAt: state.updatedAt });
+}
+
+/** 削除予定時刻を過ぎた項目をキューから取り出す（取り出した分はキューから消える） */
+function takeDuePendingDeletes(guildId, nowMs = Date.now()) {
+  const state = loadState(guildId);
+  const queue = Array.isArray(state.pendingDeletes) ? state.pendingDeletes : [];
+  if (queue.length === 0) return [];
+  const due     = queue.filter(e => e.deleteAt <= nowMs);
+  const pending = queue.filter(e => e.deleteAt > nowMs);
+  if (due.length > 0) saveState(guildId, { pendingDeletes: pending, updatedAt: state.updatedAt });
+  return due;
+}
 
 // ── notices ────────────────────────────────────────────
 // 構造: { [eventId]: [ { roleId, minutesBefore, firedAt? } ] }
@@ -83,6 +106,7 @@ function deleteNoticeEntry(guildId, eventId, index) {
 
 module.exports = {
   loadState, saveState,
+  addPendingDelete, takeDuePendingDeletes,
   loadNotices, getNoticesForEvent, setNoticesForEvent,
   deleteNoticesForEvent, markNoticeFired,
   resetFiredForEvent, deleteNoticeEntry,

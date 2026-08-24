@@ -111,13 +111,18 @@ function buildCalendarButtons(year, month, lang = "ja", options = {}) {
   return new ActionRowBuilder().addComponents(...components);
 }
 
-function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = true, lang = "ja") {
+/**
+ * @param {Array} events        今月の予定（件数・残り件数の集計に使う）
+ * @param {Array} upcomingSource 「直近の予定」を探す母集団（既定は今月のみ／通常は今月＋来月）
+ */
+function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = true, lang = "ja", upcomingSource = events) {
   const now        = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const upcoming   = events
-    .filter(e => e.start.dateTime ? new Date(e.start.dateTime) > now : new Date(e.start.date) >= todayStart)
-    .sort((a, b) => new Date(a.start.dateTime || a.start.date) - new Date(b.start.dateTime || b.start.date));
-  const next       = upcoming[0];
+  const isUpcoming = e => (e.start.dateTime ? new Date(e.start.dateTime) > now : new Date(e.start.date) >= todayStart);
+  const bySoonest  = (a, b) => new Date(a.start.dateTime || a.start.date) - new Date(b.start.dateTime || b.start.date);
+  const upcoming   = events.filter(isUpcoming).sort(bySoonest);
+  // 月末に「直近」が「なし」にならないよう、翌月の予定も含めた母集団から先頭を取る
+  const next       = [...upcomingSource].filter(isUpcoming).sort(bySoonest)[0];
   let nextStr = pick(lang, "なし", "None");
   if (next) {
     const f         = formatEvent(next, lang);

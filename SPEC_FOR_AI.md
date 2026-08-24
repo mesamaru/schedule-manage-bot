@@ -1,5 +1,5 @@
 # AI開発継続用 技術仕様書
-## スケジュール管理 Discord Bot — v7
+## スケジュール管理 Discord Bot — v8.3.0
 
 > **用途**: 次回AIに開発の続きを依頼する際の引き継ぎ資料
 
@@ -12,8 +12,12 @@ Discord サーバー上で Google カレンダーの予定を管理・表示・�
 `/setup` スラッシュコマンドでサーバーごとに独立して設定できる。  
 チャンネルに固定投稿した2つのEmbedとボタンUIで予定を操作する。
 
-**バージョン**: v7  
-**最終更新**: 2026-05-28
+**バージョン**: v8.3.0  
+**最終更新**: 2026-08-24
+
+> バージョンは `package.json` / `src/package.json` の `version` が唯一の正。
+> `src/version.js` がそれを読み、ステータスEmbedと起動ログに表示する。
+> 変更は `npm run version:patch|minor|major` で行う（両方の package.json が同時に更新される）。
 
 ---
 
@@ -50,7 +54,8 @@ src/
 ├── embed.js        全 EmbedBuilder・ActionRowBuilder のファクトリ
 ├── modals.js       追加・編集モーダルのファクトリ
 ├── storage.js      state.json・notices.json の読み書き（guildId ベース）
-├── notifier.js     cron定期呼び出しによる通知チェック・送信
+├── notifier.js     cron定期呼び出しによる通知チェック・送信・予約削除の回収
+├── version.js      package.json から版数を読む（appVersion）
 └── logger.js       console をファイルにも記録（日別ローテーション・7日自動削除）
 
 data/
@@ -121,7 +126,10 @@ v5からチャンネルID・カレンダーIDはすべて `/setup` で per-guild
   "calendarMessageId": "1234567890",
   "statusMessageId":   "0987654321",
   "lastHash":          "a1b2c3d4",
-  "updatedAt":         "2026-05-26T10:00:00.000Z"
+  "updatedAt":         "2026-05-26T10:00:00.000Z",
+  "pendingDeletes": [
+    { "channelId": "111", "messageId": "222", "deleteAt": 1787542274911 }
+  ]
 }
 ```
 
@@ -352,10 +360,14 @@ function getAndIncrementStartupCount() {
 ```
 
 ### 通知メッセージ自動削除
-`notifier.js` で通知送信後に `setTimeout` で自動削除:
+`notifier.js` で通知送信時に削除予定を `state.pendingDeletes` へ積み、cron 実行ごとに
+`sweepPendingDeletes()` が期限を過ぎたものを削除する:
 - `notifyChannelId` が設定されている場合: **7日後**（`7 * 24 * 60 * 60 * 1000` ms）
 - 設定されていない場合: **24時間後**（`24 * 60 * 60 * 1000` ms）
 - フッターに削除予定日時を表示: `🗑️ あと7日で削除（MM/DD HH:mm）`
+
+> **v8.3.0 で `setTimeout` から永続キューに変更**。`setTimeout` は再起動で失われるため、
+> 「7日後に削除」の表示どおりに消えないことがあった。新規実装でも `setTimeout` に戻さないこと。
 
 ### 編集フロー（`pendingEditInteractions`）
 ```js
@@ -388,6 +400,16 @@ DISCORD_CHANNEL_ID チャンネル
 - cron 実行時はハッシュ比較で変更があった場合のみカレンダーを更新
 - ステータスEmbedは毎回更新（最終同期時刻を表示するため）
 - ギルドごとに `guildRunning` Map で多重実行を防止（`guildRunning.get(guildId)` フラグ）
+
+#### 重複投稿の防止（v8.3.0・`upsertManagedMessage()`）
+
+固定投稿を**作り直してよいのは `10008 Unknown Message` のときだけ**。ここは壊しやすいので必ず守ること。
+
+- `fetch` / `edit` の例外をすべて「消えた」と扱うと、レート制限(429)や 5xx のたびに新規投稿が増える（v8.2.1 までの不具合）
+- 消えていた場合はまずチャンネルの直近50件から自分の投稿を探して**引き継ぐ**（`state.json` を失っても重複しない）。
+  種類の判別はボタンの customId（カレンダー=`btn_refresh` / ステータス=`btn_add`）
+- 起動時に `cleanupDuplicateMessages()` が、追跡中の1件を残して過去の重複投稿を削除する
+- `data/` が揮発する構成（`fly.toml` の `[[mounts]]` 欠落など）だと設定ごと消えるため、インフラ側も要確認
 
 ---
 
@@ -490,14 +512,17 @@ cron（*/5分）→ checkAndFireNotices:
 - Discordインタラクショントークンは**15分**で失効。長時間かかる操作には注意
 - `btn_nmgr_del_` は `guild.members.fetch()` を使うため `deferUpdate()` が必要（非同期操作前に確認応答）
 - `btn_prev_*` / `btn_next_*` は ephemeral メッセージからのクリックかどうかで `interaction.update()` / `interaction.editReply()` を切り替える
-- カレンダーEmbed は最大50件取得（`maxResults: 50`）、Embed説明欄は4000文字で切り捨て
+- 予定取得は `maxResults: 250` でページングし、1か月あたり最大1000件まで。Embed説明欄は4000文字で切り捨て
+- 日時の解釈・表示は **JST 固定**（`resolveDateTime()` が `+09:00`、`formatEvent()` がプロセスローカル時刻を使う）。
+  `src/index.js` の先頭で `process.env.TZ` を `Asia/Tokyo` に固定し、Dockerfile では `tzdata` を入れている。
+  alpine は tzdata が無いと `TZ` を解決できず UTC 扱いになるので外さないこと
 - 通知の同 `minutesBefore` に対して複数メンションがあれば1メッセージにまとめる
 - `sendSystemLog` は `clientReady` より前に呼ぶと `client.channels.fetch` が失敗するため、必ず ready 後または shutdown 時のみ呼ぶ
 - 入口は `src/index.js` だが、実処理は `src/app.js` と各 handler に分割済み
 
 ---
 
-## 19. 実装済み機能（v7 時点の累積）
+## 19. 実装済み機能（v8.3.0 時点の累積）
 
 - [x] チャンネル固定2投稿（カレンダー・ステータス）
 - [x] 予定CRUD（追加・編集・削除）

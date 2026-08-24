@@ -1,14 +1,12 @@
 require("dotenv").config();
-const fs = require("fs");
-const path = require("path");
 const logger = require("./logger");
 const { Client, GatewayIntentBits, MessageFlags } = require("discord.js");
-const { buildCommands, registerGlobalCommands, createCommandsHandler } = require("./commandsHandler");
+const { registerGlobalCommands, createCommandsHandler } = require("./commandsHandler");
 const { createButtonHandler } = require("./buttonHandlers");
 const { createModalHandler } = require("./modalHandlers");
 const { createScheduler } = require("./scheduler");
 const { createLifecycle } = require("./lifecycle");
-const { loadState, saveState, getNoticesForEvent, setNoticesForEvent, deleteNoticesForEvent, resetFiredForEvent, deleteNoticeEntry } = require("./storage");
+const { saveState } = require("./storage");
 const { loadConfig, saveConfig, deleteConfig, getAllGuildIds } = require("./guildConfig");
 const runtime = require("./runtime");
 
@@ -25,7 +23,7 @@ function createApp() {
   const modals   = createModalHandler({ loadConfig, saveState, scheduler, runtime, sharedState, client });
   const lifecycle = createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler, runtime, registerGlobalCommands: () => registerGlobalCommands(client), saveState });
 
-  client.on("interactionCreate", async (interaction) => {
+  async function routeInteraction(interaction) {
     if (interaction.isChatInputCommand()) return commands.handleChatInputCommand(interaction);
     const config = loadConfig(interaction.guildId);
     if (!config) {
@@ -38,6 +36,23 @@ function createApp() {
     if (interaction.isButton()) return buttons.handleButton(interaction);
     if (interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isUserSelectMenu()) return buttons.handleSelect(interaction);
     if (interaction.isModalSubmit()) return modals.handleModal(interaction);
+  }
+
+  client.on("interactionCreate", async (interaction) => {
+    try {
+      await routeInteraction(interaction);
+    } catch (err) {
+      // ここで拾わないと Discord 側は「インタラクションに失敗しました」とだけ表示して原因が残らない
+      console.error(`[Interaction][${interaction.guildId}] ${interaction.customId || interaction.commandName || interaction.type}: ${err?.stack || err?.message || err}`);
+      const lang = interaction.locale?.toLowerCase().startsWith("en") ? "en" : "ja";
+      const content = lang === "en" ? "❌ Something went wrong. Please try again." : "❌ 処理中にエラーが発生しました。もう一度お試しください。";
+      if (interaction.isRepliable?.()) {
+        const reply = interaction.replied || interaction.deferred
+          ? interaction.followUp({ content, flags: MessageFlags.Ephemeral })
+          : interaction.reply({ content, flags: MessageFlags.Ephemeral });
+        await reply.catch(() => {});
+      }
+    }
   });
 
   lifecycle.setupLifecycle();

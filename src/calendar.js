@@ -12,15 +12,24 @@ function getAuth() {
   });
 }
 
+// 1か月あたりに取得する上限（安全弁）。予定が多い月でも取りこぼさないようページングする
+const MAX_EVENTS_PER_MONTH = 1000;
+
 async function getMonthEvents(calendarId, year, month) {
   const auth     = getAuth();
   const calendar = google.calendar({ version: "v3", auth });
   const timeMin  = new Date(year, month - 1, 1).toISOString();
   const timeMax  = new Date(year, month, 0, 23, 59, 59).toISOString();
-  const res = await calendar.events.list({
-    calendarId, timeMin, timeMax, singleEvents: true, orderBy: "startTime", maxResults: 50,
-  });
-  return res.data.items || [];
+  const items    = [];
+  let pageToken;
+  do {
+    const res = await calendar.events.list({
+      calendarId, timeMin, timeMax, singleEvents: true, orderBy: "startTime", maxResults: 250, pageToken,
+    });
+    items.push(...(res.data.items || []));
+    pageToken = res.data.nextPageToken;
+  } while (pageToken && items.length < MAX_EVENTS_PER_MONTH);
+  return items;
 }
 
 // 24時以上の時刻入力対応 (2700 = 翌3時 等)

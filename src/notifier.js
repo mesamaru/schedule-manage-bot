@@ -3,16 +3,23 @@
  * per-guild 通知チェック・送信
  */
 const { EmbedBuilder } = require("discord.js");
-const { getMonthEvents, formatEvent } = require("./calendar");
-const { loadNotices, markNoticeFired, deleteNoticesForEvent } = require("./storage");
+const { getMonthEvents, getEvent, formatEvent } = require("./calendar");
+const { loadNotices, markNoticeFired, deleteNoticesForEvent, addPendingDelete, takeDuePendingDeletes } = require("./storage");
 const { getLang, pick } = require("./i18n");
+
+/** Google Calendar の「その予定は存在しない」応答かどうか */
+function isEventNotFound(err) {
+  const code = err?.code || err?.status || err?.response?.status;
+  return code === 404 || code === 410;
+}
 
 /**
  * @param {Client} client
  * @param {string} guildId
  * @param {{ calendarId, notifyChannelId, channelId }} config
+ * @param {Array|null} horizonEvents 呼び出し側が取得済みの今月＋来月の予定（省略時はここで取得）
  */
-async function checkAndFireNotices(client, guildId, config) {
+async function checkAndFireNotices(client, guildId, config, horizonEvents = null) {
   const lang = getLang(config);
   const notices = loadNotices(guildId);
   if (Object.keys(notices).length === 0) return;
@@ -20,9 +27,12 @@ async function checkAndFireNotices(client, guildId, config) {
   const now  = new Date();
   const year = now.getFullYear();
 
-  const thisMonth = await getMonthEvents(config.calendarId, year, now.getMonth() + 1).catch(() => []);
-  const nextMonth = await getMonthEvents(config.calendarId, year, now.getMonth() + 2).catch(() => []);
-  const allEvents = [...thisMonth, ...nextMonth];
+  let allEvents = horizonEvents;
+  if (!allEvents) {
+    const thisMonth = await getMonthEvents(config.calendarId, year, now.getMonth() + 1).catch(() => []);
+    const nextMonth = await getMonthEvents(config.calendarId, year, now.getMonth() + 2).catch(() => []);
+    allEvents = [...thisMonth, ...nextMonth];
+  }
   const eventMap  = Object.fromEntries(allEvents.map(e => [e.id, e]));
 
   const hasNotifyChannel = !!config.notifyChannelId;
@@ -86,7 +96,8 @@ async function checkAndFireNotices(client, guildId, config) {
 
       try {
         const msg = await channel.send({ content: mentions, embeds: [embed] });
-        setTimeout(() => msg.delete().catch(() => {}), deleteAfterMs);
+        // setTimeout は再起動で失われるため、削除予定を state に永続化して cron で回収する
+        addPendingDelete(guildId, { channelId: msg.channelId, messageId: msg.id, deleteAt: now.getTime() + deleteAfterMs });
         for (const i of indices) markNoticeFired(guildId, eventId, i);
         console.log(`[Notify][${guildId}] 送信: ${f.title} → ${mentions} (${hoursText})`);
       } catch (err) {
@@ -95,15 +106,48 @@ async function checkAndFireNotices(client, guildId, config) {
     }
   }
 
-  // 24時間経過した通知を自動削除
-  for (const [eventId] of Object.entries(notices)) {
-    const event   = eventMap[eventId];
-    const startMs = event ? new Date(event.start.dateTime || event.start.date).getTime() : 0;
-    if (!event || now.getTime() > startMs + 24 * 60 * 60 * 1000) {
+  // 開始から24時間経過した予定の通知設定を掃除する
+  for (const eventId of Object.keys(notices)) {
+    const event = eventMap[eventId];
+    if (event) {
+      const startMs = new Date(event.start.dateTime || event.start.date).getTime();
+      if (now.getTime() > startMs + 24 * 60 * 60 * 1000) {
+        deleteNoticesForEvent(guildId, eventId);
+        console.log(`[Notify][${guildId}] 期限切れ通知削除: ${eventId}`);
+      }
+      continue;
+    }
+    // 今月・来月の範囲外（＝再来月以降の予定）を「削除された」と誤判定しないよう、直接問い合わせる
+    let remote = null;
+    try {
+      remote = await getEvent(config.calendarId, eventId);
+    } catch (err) {
+      if (isEventNotFound(err)) {
+        deleteNoticesForEvent(guildId, eventId);
+        console.log(`[Notify][${guildId}] 予定が存在しないため通知削除: ${eventId}`);
+      }
+      // 一時的な API エラーのときは設定を残す
+      continue;
+    }
+    if (!remote || remote.status === "cancelled") {
       deleteNoticesForEvent(guildId, eventId);
-      console.log(`[Notify][${guildId}] 期限切れ通知削除: ${eventId}`);
+      console.log(`[Notify][${guildId}] 予定が取り消されたため通知削除: ${eventId}`);
     }
   }
 }
 
-module.exports = { checkAndFireNotices };
+/** 予約削除キューを処理する（cron 実行ごとに呼ばれる） */
+async function sweepPendingDeletes(client, guildId) {
+  for (const entry of takeDuePendingDeletes(guildId)) {
+    try {
+      const channel = await client.channels.fetch(entry.channelId);
+      const msg     = await channel.messages.fetch(entry.messageId);
+      await msg.delete();
+      console.log(`[Notify][${guildId}] 通知メッセージを自動削除: ${entry.messageId}`);
+    } catch {
+      // すでに削除済み・チャンネル消失などは無視する
+    }
+  }
+}
+
+module.exports = { checkAndFireNotices, sweepPendingDeletes };

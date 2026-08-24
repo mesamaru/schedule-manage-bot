@@ -82,7 +82,7 @@ gcal-discord-bot/
 ├── src/
 │   ├── index.js      # エントリーポイント・Discordクライアント
 │   ├── calendar.js   # Google Calendar API
-│   ├── commands.js   # /add コマンド・モーダル
+│   ├── commandsHandler.js # スラッシュコマンド定義・処理
 │   └── storage.js    # 状態保存
 ├── data/
 │   └── state.json    # 自動生成（固定メッセージIDなど）

@@ -1,4 +1,9 @@
 require("dotenv").config();
+
+// 予定の日時表示・入力解釈はすべて JST 前提のため、実行環境の TZ に依存しないよう固定する。
+// Date を一度でも使う前に設定する必要があるので、他の require より先に置くこと。
+process.env.TZ = process.env.TZ || "Asia/Tokyo";
+
 const path = require("path");
 const readline = require("readline");
 const { spawn } = require("child_process");

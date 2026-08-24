@@ -37,7 +37,7 @@ function createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler
       }
     } catch (err) { console.error("[Shutdown] エラー:", err.message); }
     clearTimeout(timer);
-    client.destroy();
+    await client.destroy().catch(() => {});
     await logger.close();
     process.exit(0);
   }

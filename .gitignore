@@ -1,0 +1,8 @@
+node_modules/
+.npm/
+.env
+logs/
+data/
+.update-tmp/
+bot.zip
+*.log
