@@ -9,10 +9,24 @@ const { currentYM } = require("./runtime");
 // state.json を失ったときに備え、直近この件数のメッセージから自分の投稿を探して引き継ぐ
 const ADOPT_SCAN_LIMIT = 50;
 
-// Bot が常設で管理するメッセージ。marker は種類を見分けるためのボタン customId
+// Bot が常設で管理するメッセージ。
+// marker      : 種類を見分けるためのボタン customId（通常はこれで判別する）
+// matchEmbed  : v8.3.0 以前の停止処理でボタンを剥がされた残骸を拾うための予備判定。
+//               ログ通知・予定通知の Embed を巻き込まないよう footer なしを条件に含める
 const MANAGED_MESSAGES = {
-  calendar: { stateKey: "calendarMessageId", marker: "btn_refresh", label: "Cal" },
-  status:   { stateKey: "statusMessageId",   marker: "btn_add",     label: "Status" },
+  calendar: {
+    stateKey: "calendarMessageId",
+    marker: "btn_refresh",
+    label: "Cal",
+    matchEmbed: (e) => !e.footer && /^📅\s+(\d{4}年|[A-Z][a-z]{2}\s+\d{4})/.test(e.title || ""),
+  },
+  status: {
+    stateKey: "statusMessageId",
+    marker: "btn_add",
+    label: "Status",
+    matchEmbed: (e) => !e.footer && !e.title
+      && (e.description || "").includes("🔐") && (e.description || "").includes("🔃"),
+  },
 };
 
 function describeDiscordError(err) {
@@ -34,6 +48,17 @@ function hasMarker(message, marker) {
     (row.components || []).some(component => component.customId === marker));
 }
 
+/**
+ * このメッセージが該当種別の管理対象かどうか。
+ * 通常はボタンの customId（marker）で判別するが、v8.3.0 より前の停止処理は
+ * ボタンを丸ごと削除していたため、その残骸は matchEmbed（Embed の内容）で拾う。
+ */
+function matchesManaged(message, descriptor) {
+  if (hasMarker(message, descriptor.marker)) return true;
+  const embed = message.embeds?.[0];
+  return Boolean(embed && descriptor.matchEmbed?.(embed));
+}
+
 function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
   const guildRunning = new Map();
   const cronSchedule = config.cronSchedule || process.env.CRON_SCHEDULE || "*/5 * * * *";
@@ -49,10 +74,10 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
   }
 
   /** チャンネル内から、Bot 自身が投稿した該当種別のメッセージを新しい順に返す */
-  async function findManagedMessages(channel, marker) {
+  async function findManagedMessages(channel, descriptor) {
     try {
       const recent = await channel.messages.fetch({ limit: ADOPT_SCAN_LIMIT });
-      return [...recent.values()].filter(m => m.author?.id === client.user?.id && hasMarker(m, marker));
+      return [...recent.values()].filter(m => m.author?.id === client.user?.id && matchesManaged(m, descriptor));
     } catch {
       return [];
     }
@@ -63,7 +88,8 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
    * state を失っていても、チャンネルに残っている自分の投稿を引き継いで重複投稿を防ぐ。
    */
   async function upsertManagedMessage(kind, guildId, channel, payload) {
-    const { stateKey, marker, label } = MANAGED_MESSAGES[kind];
+    const descriptor = MANAGED_MESSAGES[kind];
+    const { stateKey, label } = descriptor;
     const trackedId = loadState(guildId)[stateKey];
 
     if (trackedId) {
@@ -80,7 +106,7 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
       }
     }
 
-    for (const candidate of await findManagedMessages(channel, marker)) {
+    for (const candidate of await findManagedMessages(channel, descriptor)) {
       try {
         await candidate.edit(payload);
         saveState(guildId, { [stateKey]: candidate.id });
@@ -124,10 +150,11 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
     const channel = await client.channels.fetch(guildConfig.channelId).catch(() => null);
     if (!channel) return;
     const state = loadState(guildId);
-    for (const { stateKey, marker, label } of Object.values(MANAGED_MESSAGES)) {
+    for (const descriptor of Object.values(MANAGED_MESSAGES)) {
+      const { stateKey, label } = descriptor;
       const keepId = state[stateKey];
       if (!keepId) continue;
-      for (const msg of await findManagedMessages(channel, marker)) {
+      for (const msg of await findManagedMessages(channel, descriptor)) {
         if (msg.id === keepId) continue;
         try {
           await msg.delete();

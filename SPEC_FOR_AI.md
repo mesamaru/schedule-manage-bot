@@ -401,14 +401,20 @@ DISCORD_CHANNEL_ID チャンネル
 - ステータスEmbedは毎回更新（最終同期時刻を表示するため）
 - ギルドごとに `guildRunning` Map で多重実行を防止（`guildRunning.get(guildId)` フラグ）
 
-#### 重複投稿の防止（v8.3.0・`upsertManagedMessage()`）
+#### 重複投稿の防止（v8.3.0/v8.3.1・`upsertManagedMessage()`）
 
 固定投稿を**作り直してよいのは `10008 Unknown Message` のときだけ**。ここは壊しやすいので必ず守ること。
 
 - `fetch` / `edit` の例外をすべて「消えた」と扱うと、レート制限(429)や 5xx のたびに新規投稿が増える（v8.2.1 までの不具合）
 - 消えていた場合はまずチャンネルの直近50件から自分の投稿を探して**引き継ぐ**（`state.json` を失っても重複しない）。
-  種類の判別はボタンの customId（カレンダー=`btn_refresh` / ステータス=`btn_add`）
+  判別は原則ボタンの customId（カレンダー=`btn_refresh` / ステータス=`btn_add`）。
+  加えて `MANAGED_MESSAGES[kind].matchEmbed(embed)` による Embed 内容ベースの予備判定も持つ
+  （v8.3.0 より前の `gracefulShutdown` がボタンを丸ごと削除していたため、その残骸を拾うための保険）
 - 起動時に `cleanupDuplicateMessages()` が、追跡中の1件を残して過去の重複投稿を削除する
+- `gracefulShutdown`（`lifecycle.js`）は停止時にボタンを**削除ではなく無効化**する
+  （`buildCalendarButtons`/`buildActionButtons` の `{ disabled: true }`）。
+  ボタンを削除すると customId が消え、次回起動時に自分のメッセージだと判別できなくなり重複投稿の原因になる。
+  **新しい停止処理を書く場合も `components: []` にしないこと**
 - `data/` が揮発する構成（`fly.toml` の `[[mounts]]` 欠落など）だと設定ごと消えるため、インフラ側も要確認
 
 ---

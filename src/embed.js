@@ -95,7 +95,7 @@ function buildCalendarEmbed(guildId, events, year, month, lang = "ja") {
 }
 
 function buildCalendarButtons(year, month, lang = "ja", options = {}) {
-  const { showEdit = false } = options;
+  const { showEdit = false, disabled = false } = options;
   const prev = month === 1  ? { y: year-1, m: 12 } : { y: year, m: month-1 };
   const next = month === 12 ? { y: year+1, m: 1  } : { y: year, m: month+1 };
   const components = [
@@ -108,6 +108,9 @@ function buildCalendarButtons(year, month, lang = "ja", options = {}) {
       new ButtonBuilder().setCustomId(`btn_edit_select_${year}_${month}`).setLabel(pick(lang, "✏️ 編集", "✏️ Edit")).setStyle(ButtonStyle.Secondary),
     );
   }
+  // 停止中はボタンを消さずに無効化する。消すと customId が失われ、
+  // 再起動時に「自分が管理しているメッセージ」を見分けられなくなる（＝重複投稿の原因になる）
+  if (disabled) components.forEach(b => b.setDisabled(true));
   return new ActionRowBuilder().addComponents(...components);
 }
 
@@ -151,12 +154,16 @@ function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = tr
     );
 }
 
-function buildActionButtons(lang = "ja") {
-  return new ActionRowBuilder().addComponents(
+function buildActionButtons(lang = "ja", options = {}) {
+  const { disabled = false } = options;
+  const components = [
     new ButtonBuilder().setCustomId("btn_add").setLabel(pick(lang, "➕ 予定を追加", "➕ Add Event")).setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("btn_edit_select").setLabel(pick(lang, "✏️ 編集", "✏️ Edit")).setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("btn_delete_select").setLabel(pick(lang, "🗑️ 削除", "🗑️ Delete")).setStyle(ButtonStyle.Danger),
-  );
+  ];
+  // 停止中もボタン自体は残す（理由は buildCalendarButtons を参照）
+  if (disabled) components.forEach(b => b.setDisabled(true));
+  return new ActionRowBuilder().addComponents(...components);
 }
 
 function buildSelectMenu(events, customId, placeholder, lang = "ja") {

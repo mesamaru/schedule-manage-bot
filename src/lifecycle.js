@@ -1,4 +1,4 @@
-const { buildStatusEmbed } = require("./embed");
+const { buildStatusEmbed, buildActionButtons, buildCalendarButtons } = require("./embed");
 const { loadState } = require("./storage");
 const { getLang } = require("./i18n");
 const { appVersion } = require("./version");
@@ -22,16 +22,23 @@ function createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler
         const state   = loadState(gid);
         const channel = await client.channels.fetch(cfg.channelId).catch(() => null);
         if (!channel) continue;
+        const lang = getLang(cfg);
+        const { year, month } = runtime.currentYM();
+        // ボタンは削除せず「無効化」する。削除すると customId が消え、次回起動時に
+        // 自分が管理しているメッセージだと判別できず重複投稿になる
         if (state.statusMessageId) {
           try {
             const msg = await channel.messages.fetch(state.statusMessageId);
-            await msg.edit({ embeds: [buildStatusEmbed(gid, [], state.updatedAt, cfg.operatorRoleName, false, getLang(cfg))], components: [] });
+            await msg.edit({
+              embeds: [buildStatusEmbed(gid, [], state.updatedAt, cfg.operatorRoleName, false, lang)],
+              components: [buildActionButtons(lang, { disabled: true })],
+            });
           } catch (e) { console.error(`[Shutdown][${gid}]`, e.message); }
         }
         if (state.calendarMessageId) {
           try {
             const msg = await channel.messages.fetch(state.calendarMessageId);
-            await msg.edit({ components: [] });
+            await msg.edit({ components: [buildCalendarButtons(year, month, lang, { disabled: true })] });
           } catch (e) { console.error(`[Shutdown][${gid}]`, e.message); }
         }
       }
