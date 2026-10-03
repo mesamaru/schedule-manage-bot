@@ -1,5 +1,11 @@
-const { EmbedBuilder } = require("discord.js");
+const os = require("os");
+const crypto = require("crypto");
+const { EmbedBuilder, PermissionFlagsBits, RESTJSONErrorCodes } = require("discord.js");
 const { getLang, pick } = require("./i18n");
+
+// このプロセスを識別する ID。ステータスに表示し、同じ Bot トークンで別の場所
+// （例: Fly.io と Pterodactyl）が同時に動いていないかの検出にも使う
+const INSTANCE_ID = `${os.hostname().slice(0, 12)}/${crypto.randomBytes(2).toString("hex")}`;
 
 function getAndIncrementStartupCount(fs, path) {
   const dir  = path.join(__dirname, "../data");
@@ -24,22 +30,22 @@ function currentYM() {
   return { year: now.getFullYear(), month: now.getMonth() + 1 };
 }
 
-function hasPermission(member, operatorRoleName) {
-  if (!member) return false;
-  if (member.permissions.has(require("discord.js").PermissionFlagsBits.Administrator)) return true;
-  return member.roles.cache.some(r => r.name === operatorRoleName);
+/**
+ * 操作権限の判定。interaction を受け取る。
+ * ギルドがキャッシュに無いと interaction.member は生データ（roles が ID 配列）になり、
+ * 以前の実装（member.permissions.has / member.roles.cache）は例外で落ちていた。
+ */
+function hasPermission(interaction, operatorRoleName) {
+  if (!interaction?.inGuild?.()) return false;
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) return true;
+  const roleName = operatorRoleName || "CalendarOperator";
+  const member = interaction.member;
+  const roleIds = Array.isArray(member?.roles) ? member.roles : [...(member?.roles?.cache?.keys() || [])];
+  return roleIds.some(id => interaction.guild?.roles.cache.get(id)?.name === roleName);
 }
 
 function normalizeTime(str) {
-  if (!str) return "";
-  str = str.trim();
-  if (/^\d{2}:\d{2}$/.test(str)) return str;
-  const digits = str.replace(/\D/g, "");
-  if (/^\d{3,4}$/.test(digits)) {
-    const padded = digits.padStart(4, "0");
-    return `${padded.slice(0, 2)}:${padded.slice(2)}`;
-  }
-  return str;
+  return require("./calendar").normalizeTime(str);
 }
 
 function isLogNotifyEnabled(cfg) {
@@ -60,22 +66,36 @@ function isSystemLogEnabled(cfg, category) {
   return toggles[category] !== false;
 }
 
+/**
+ * 「n秒後に消えます」表示。以前は 1 秒ごとに editReply してカウントダウンしていたが、
+ * 操作 1 回で 5〜8 回の API 呼び出しになり、レート制限で他の応答が遅れる原因になっていた。
+ * Discord の相対タイムスタンプ（<t:…:R>）ならクライアント側で勝手にカウントダウンされる。
+ */
 function fmtCd(content, n, lang = "ja") {
-  return `${content}\n-# (${lang === "en" ? `Deletes in ${n}s` : `${n}秒後に消えます`})`;
+  const at = Math.floor(Date.now() / 1000) + n;
+  return `${content}\n-# ${lang === "en" ? `Deletes <t:${at}:R>` : `<t:${at}:R>に消えます`}`;
 }
 
-function startCountdownDelete(interaction, content, seconds = 5, lang = "ja") {
-  for (let i = seconds - 1; i >= 1; i--) {
-    setTimeout(() => interaction.editReply({ content: fmtCd(content, i, lang) }).catch(() => {}), (seconds - i) * 1000);
-  }
+function startCountdownDelete(interaction, _content, seconds = 5) {
   setTimeout(() => interaction.deleteReply().catch(() => {}), seconds * 1000);
+}
+
+// ── Discord エラー判定 ──────────────────────────────────
+/**
+ * インタラクションに応答できなくなった（3 秒の応答期限切れ／別プロセスが先に応答済み）ことを示すエラーか。
+ * 10062 Unknown interaction / 40060 Interaction has already been acknowledged
+ */
+function isInteractionGone(err) {
+  return err?.code === RESTJSONErrorCodes.UnknownInteraction
+    || err?.code === RESTJSONErrorCodes.InteractionHasAlreadyBeenAcknowledged;
 }
 
 async function sendAuditLog(client, action, interaction, { title, dateStr, timeStr, desc }, config) {
   if (!isLogNotifyEnabled(config)) return;
   try {
     const lang = getLang(config);
-    const ch = await client.channels.fetch(config.logChannelId);
+    const ch = await client.channels.fetch(config.logChannelId).catch(() => null);
+    if (!ch?.isTextBased?.()) return;
     const colorMap = { "追加": 0x57f287, "変更": 0xfee75c, "削除": 0xed4245 };
     const iconMap  = { "追加": "📅", "変更": "✏️", "削除": "🗑️" };
     const actionEn = { "追加": "Added", "変更": "Updated", "削除": "Deleted" };
@@ -131,6 +151,13 @@ function buildSystemLogMessage(kind, payload, lang) {
         title: lang === "en" ? "❌ Discord Error" : "❌ Discord エラー",
         description: lang === "en" ? `${payload.message}\nTime: ${payload.ts}` : `${payload.message}\n時刻: ${payload.ts}`,
       };
+    case "duplicate":
+      return {
+        title: lang === "en" ? "⚠️ Another bot instance detected" : "⚠️ 別の Bot プロセスを検出",
+        description: lang === "en"
+          ? `The status message was updated by another process (\`${payload.other}\`) running with the same bot token.\nThis process: \`${payload.self}\`\nStop one of them (e.g. Fly.io or Pterodactyl). Otherwise buttons fail with "Unknown interaction".\nTime: ${payload.ts}`
+          : `同じ Bot トークンで動いている別プロセス（\`${payload.other}\`）がステータスを更新しています。\nこのプロセス: \`${payload.self}\`\nどちらか一方（例: Fly.io か Pterodactyl）を停止してください。放置するとボタン操作が「Unknown interaction」で失敗します。\n時刻: ${payload.ts}`,
+      };
     case "shutdown":
       return {
         title: lang === "en" ? "🛑 Bot Stopping" : "🛑 Bot 停止",
@@ -144,13 +171,20 @@ function buildSystemLogMessage(kind, payload, lang) {
 }
 
 async function sendSystemLog(client, color, kind, payload, category, getAllGuildIds, loadConfig) {
+  // 起動直後（ready 前）はギルドがキャッシュされておらず、channels.fetch が null を返す。
+  // 以前はそのまま ch.send して「Cannot read properties of null (reading 'send')」になっていた
+  if (!client.isReady()) return;
   for (const gid of getAllGuildIds()) {
     const cfg = loadConfig(gid);
     if (!isSystemLogEnabled(cfg, category)) continue;
     try {
       const lang = getLang(cfg);
       const msg  = buildSystemLogMessage(kind, payload, lang);
-      const ch = await client.channels.fetch(cfg.logChannelId);
+      const ch = await client.channels.fetch(cfg.logChannelId).catch(() => null);
+      if (!ch?.isTextBased?.()) {
+        console.warn(`[SystemLog][${gid}] ログチャンネルにアクセスできません: ${cfg.logChannelId}`);
+        continue;
+      }
       await ch.send({
         embeds: [new EmbedBuilder().setColor(color).setTitle(msg.title).setDescription(msg.description).setTimestamp()]
       });
@@ -165,6 +199,8 @@ function formatEventLocal(event, lang = "ja") {
 }
 
 module.exports = {
+  INSTANCE_ID,
+  isInteractionGone,
   getAndIncrementStartupCount,
   fmtTimestamp,
   currentYM,

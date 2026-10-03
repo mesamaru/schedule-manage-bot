@@ -1,42 +1,46 @@
 /**
- * storage.js v5
+ * storage.js
  * per-guild データストレージ
  * data/{guildId}/state.json   : Bot状態（メッセージID・ハッシュ等）
- * data/{guildId}/notices.json : 通知設定（eventId → [{roleId, minutesBefore, firedAt?}]）
+ * data/{guildId}/notices.json : 通知設定（eventId → [{roleId, minutesBefore, targetType?, firedAt?, firedFor?}]）
  */
-const fs   = require("fs");
 const path = require("path");
+const { readJson, writeJsonAtomic } = require("./fsutil");
 
 const DATA = path.join(__dirname, "../data");
 
+function filePath(guildId, file) {
+  return path.join(DATA, String(guildId), file);
+}
+
 function read(guildId, file) {
-  const p = path.join(DATA, guildId, file);
-  try {
-    if (!fs.existsSync(p)) return {};
-    return JSON.parse(fs.readFileSync(p, "utf-8"));
-  } catch { return {}; }
+  const data = readJson(filePath(guildId, file), {});
+  return data && typeof data === "object" && !Array.isArray(data) ? data : {};
 }
 
 function write(guildId, file, data) {
-  const dir = path.join(DATA, guildId);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, file), JSON.stringify(data, null, 2), "utf-8");
+  writeJsonAtomic(filePath(guildId, file), data);
 }
 
 // ── state ──────────────────────────────────────────────
-function loadState(guildId)          { return read(guildId, "state.json"); }
-// updatedAt を明示的に渡された場合はそれを尊重する（渡されなければ現在時刻）
-function saveState(guildId, partial) { write(guildId, "state.json", { ...loadState(guildId), ...partial, updatedAt: partial?.updatedAt || new Date().toISOString() }); }
+function loadState(guildId) { return read(guildId, "state.json"); }
+
+/**
+ * state を部分更新する。updatedAt（＝「最終同期」表示）は明示的に渡したときだけ変わる。
+ * 以前は渡さないと現在時刻で上書きしていたため、通知キューの更新などでも「最終同期」が進んでいた。
+ */
+function saveState(guildId, partial = {}) {
+  write(guildId, "state.json", { ...loadState(guildId), ...partial });
+}
 
 // ── 予約削除キュー ─────────────────────────────────────
 // 通知メッセージの自動削除は setTimeout だと再起動で失われるため state に永続化する
-// 構造: state.pendingDeletes = [ { channelId, messageId, deleteAt } ]
+// 構造: state.pendingDeletes = [ { channelId, messageId, deleteAt, attempts? } ]
 function addPendingDelete(guildId, entry) {
   const state = loadState(guildId);
   const queue = Array.isArray(state.pendingDeletes) ? state.pendingDeletes : [];
   queue.push(entry);
-  // 「最終同期」の表示を汚さないよう updatedAt は据え置く
-  saveState(guildId, { pendingDeletes: queue, updatedAt: state.updatedAt });
+  saveState(guildId, { pendingDeletes: queue });
 }
 
 /** 削除予定時刻を過ぎた項目をキューから取り出す（取り出した分はキューから消える） */
@@ -46,14 +50,19 @@ function takeDuePendingDeletes(guildId, nowMs = Date.now()) {
   if (queue.length === 0) return [];
   const due     = queue.filter(e => e.deleteAt <= nowMs);
   const pending = queue.filter(e => e.deleteAt > nowMs);
-  if (due.length > 0) saveState(guildId, { pendingDeletes: pending, updatedAt: state.updatedAt });
+  if (due.length > 0) saveState(guildId, { pendingDeletes: pending });
   return due;
 }
 
 // ── notices ────────────────────────────────────────────
-// 構造: { [eventId]: [ { roleId, minutesBefore, firedAt? } ] }
-function loadNotices(guildId)         { return read(guildId, "notices.json"); }
-function saveNotices(guildId, data)   { write(guildId, "notices.json", data); }
+function loadNotices(guildId)       { return read(guildId, "notices.json"); }
+function saveNotices(guildId, data) { write(guildId, "notices.json", data); }
+
+function sameTarget(a, b) {
+  return a.roleId === b.roleId
+    && a.minutesBefore === b.minutesBefore
+    && (a.targetType || "role") === (b.targetType || "role");
+}
 
 function getNoticesForEvent(guildId, eventId) {
   return loadNotices(guildId)[eventId] || [];
@@ -61,53 +70,72 @@ function getNoticesForEvent(guildId, eventId) {
 
 function setNoticesForEvent(guildId, eventId, notices) {
   const all = loadNotices(guildId);
-  if (!notices || notices.length === 0) {
-    delete all[eventId];
-  } else {
-    all[eventId] = notices;
-  }
+  if (!notices || notices.length === 0) delete all[eventId];
+  else all[eventId] = notices;
   saveNotices(guildId, all);
+}
+
+/** 通知を 1 件追加する。同じ宛先・同じタイミングが既にあれば追加しない（二重メンション防止） */
+function addNotice(guildId, eventId, entry) {
+  const all = loadNotices(guildId);
+  const list = all[eventId] || [];
+  if (list.some(n => sameTarget(n, entry))) return false;
+  list.push(entry);
+  all[eventId] = list;
+  saveNotices(guildId, all);
+  return true;
 }
 
 function deleteNoticesForEvent(guildId, eventId) {
   const all = loadNotices(guildId);
+  if (!(eventId in all)) return;
   delete all[eventId];
   saveNotices(guildId, all);
 }
 
-function markNoticeFired(guildId, eventId, index) {
+/**
+ * 送信済みにする。インデックスではなく宛先＋タイミングで照合する
+ * （送信中に UI から通知が削除されてもズレて別の通知に印が付かないように）。
+ * firedFor には「どの開始時刻に対して送ったか」を残し、Google カレンダー側で
+ * 予定が移動された場合に再通知できるようにする。
+ */
+function markNoticesFired(guildId, eventId, entries, firedFor) {
   const all = loadNotices(guildId);
-  if (all[eventId]?.[index]) {
-    all[eventId][index].firedAt = new Date().toISOString();
-    saveNotices(guildId, all);
+  const list = all[eventId];
+  if (!list) return;
+  const firedAt = new Date().toISOString();
+  for (const n of list) {
+    if (entries.some(e => sameTarget(e, n))) {
+      n.firedAt  = firedAt;
+      n.firedFor = firedFor;
+    }
   }
+  saveNotices(guildId, all);
 }
 
 function resetFiredForEvent(guildId, eventId) {
   const all = loadNotices(guildId);
-  if (all[eventId]) {
-    all[eventId] = all[eventId].map(n => {
-      const copy = { roleId: n.roleId, minutesBefore: n.minutesBefore };
-      if (n.targetType) copy.targetType = n.targetType;
-      return copy;
-    });
-    saveNotices(guildId, all);
-  }
+  if (!all[eventId]) return;
+  all[eventId] = all[eventId].map(n => {
+    const copy = { roleId: n.roleId, minutesBefore: n.minutesBefore };
+    if (n.targetType) copy.targetType = n.targetType;
+    return copy;
+  });
+  saveNotices(guildId, all);
 }
 
 function deleteNoticeEntry(guildId, eventId, index) {
   const all = loadNotices(guildId);
-  if (all[eventId]) {
-    all[eventId].splice(index, 1);
-    if (all[eventId].length === 0) delete all[eventId];
-    saveNotices(guildId, all);
-  }
+  if (!all[eventId] || !all[eventId][index]) return;
+  all[eventId].splice(index, 1);
+  if (all[eventId].length === 0) delete all[eventId];
+  saveNotices(guildId, all);
 }
 
 module.exports = {
   loadState, saveState,
   addPendingDelete, takeDuePendingDeletes,
-  loadNotices, getNoticesForEvent, setNoticesForEvent,
-  deleteNoticesForEvent, markNoticeFired,
+  loadNotices, getNoticesForEvent, setNoticesForEvent, addNotice,
+  deleteNoticesForEvent, markNoticesFired,
   resetFiredForEvent, deleteNoticeEntry,
 };

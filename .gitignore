@@ -6,3 +6,4 @@ data/
 .update-tmp/
 bot.zip
 *.log
+*.tmp

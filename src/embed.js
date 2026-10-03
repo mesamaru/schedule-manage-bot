@@ -6,9 +6,10 @@ const {
   RoleSelectMenuBuilder, UserSelectMenuBuilder,
 } = require("discord.js");
 const { appVersion } = require("./version");
-const { formatEvent } = require("./calendar");
+const { formatEvent, eventStartMs, isAllDay } = require("./calendar");
 const { getNoticesForEvent } = require("./storage");
 const { pick } = require("./i18n");
+const { toKey } = require("./idRegistry");
 
 // 通知時間の简易表示ラベル
 function minutesToShort(m, lang = "ja") {
@@ -54,11 +55,7 @@ function buildCalendarEmbed(guildId, events, year, month, lang = "ja") {
   }
 
   // 開始時刻順にソート
-  const sorted = [...events].sort((a, b) => {
-    const ta = new Date(a.start.dateTime || a.start.date).getTime();
-    const tb = new Date(b.start.dateTime || b.start.date).getTime();
-    return ta - tb;
-  });
+  const sorted = [...events].sort((a, b) => eventStartMs(a) - eventStartMs(b));
 
   const lines = [];
   let lastDay = null;
@@ -114,44 +111,63 @@ function buildCalendarButtons(year, month, lang = "ja", options = {}) {
   return new ActionRowBuilder().addComponents(...components);
 }
 
+function isUpcomingEvent(e, now = new Date()) {
+  if (!isAllDay(e)) return eventStartMs(e) > now.getTime();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return eventStartMs(e) >= todayStart;
+}
+
 /**
- * @param {Array} events        今月の予定（件数・残り件数の集計に使う）
- * @param {Array} upcomingSource 「直近の予定」を探す母集団（既定は今月のみ／通常は今月＋来月）
+ * @param {string} guildId
+ * @param {object} o
+ * @param {Array}  o.events          今月の予定（件数・残り件数の集計に使う）
+ * @param {Array}  o.upcomingSource  「直近の予定」を探す母集団（通常は今月＋来月）
+ * @param {string} o.lastUpdated     最終同期（成功）時刻
+ * @param {string} o.operatorRoleName
+ * @param {boolean} o.online
+ * @param {string} o.lang
+ * @param {string|null} o.syncError  直近の同期エラー（あれば表示）
+ * @param {string|null} o.instanceId 表示するプロセスID
  */
-function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = true, lang = "ja", upcomingSource = events) {
-  const now        = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const isUpcoming = e => (e.start.dateTime ? new Date(e.start.dateTime) > now : new Date(e.start.date) >= todayStart);
-  const bySoonest  = (a, b) => new Date(a.start.dateTime || a.start.date) - new Date(b.start.dateTime || b.start.date);
-  const upcoming   = events.filter(isUpcoming).sort(bySoonest);
+function buildStatusEmbed(guildId, o = {}) {
+  const {
+    events = [], upcomingSource = events, lastUpdated = null, operatorRoleName,
+    online = true, lang = "ja", syncError = null, instanceId = null,
+  } = o;
+  const now      = new Date();
+  const bySoonest = (a, b) => eventStartMs(a) - eventStartMs(b);
+  const upcoming = events.filter(e => isUpcomingEvent(e, now));
   // 月末に「直近」が「なし」にならないよう、翌月の予定も含めた母集団から先頭を取る
-  const next       = [...upcomingSource].filter(isUpcoming).sort(bySoonest)[0];
+  const next     = upcomingSource.filter(e => isUpcomingEvent(e, now)).sort(bySoonest)[0];
   let nextStr = pick(lang, "なし", "None");
   if (next) {
     const f         = formatEvent(next, lang);
     const noticeStr = buildNoticeSummary(guildId, next.id, lang);
     const desc      = f.desc ? f.desc.replace(/^\n　/, "") : "";
-    const baseInfo  = `${f.d}日(${f.w}) ${f.title}　\`${f.timeStr}\``;
+    const baseInfo  = lang === "en" ? `${f.w} ${f.d} ${f.title}  \`${f.timeStr}\`` : `${f.d}日(${f.w}) ${f.title}　\`${f.timeStr}\``;
     const indent    = "　　　　 "; // ⏭️ 直近　 の幅に合わせたインデント
-
     const nextLines = [baseInfo];
-    if (desc)      nextLines.push(`${indent}${desc}`);
+    if (desc)      nextLines.push(`${indent}${desc.length > 200 ? desc.slice(0, 200) + "…" : desc}`);
     if (noticeStr) nextLines.push(`${indent}${noticeStr}`);
-
     nextStr = nextLines.join("\n");
   }
-  const jst = d => new Date(d).toLocaleString(lang === "en" ? "en-US" : "ja-JP", { timeZone:"Asia/Tokyo", month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", second:"2-digit" });
+  const jst = d => new Date(d).toLocaleString(lang === "en" ? "en-US" : "ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  const lines = [
+    online ? pick(lang, "🟢 **Bot稼働中**", "🟢 **Bot Online**") : pick(lang, "🔴 **Bot停止中**", "🔴 **Bot Offline**"),
+    `${pick(lang, "📆 今月", "📆 This month")}  **${events.length}${pick(lang, "件", "")}**  ${pick(lang, "残り", "Remaining")} **${upcoming.length}${pick(lang, "件", "")}**`,
+    `${pick(lang, "⏭️ 直近", "⏭️ Next")}  ${nextStr}`,
+    `${pick(lang, "🔃 最終同期", "🔃 Last sync")}  ${lastUpdated ? jst(lastUpdated) : pick(lang, "未取得", "Not synced")}`,
+  ];
+  if (syncError) lines.push(`${pick(lang, "⚠️ 同期エラー", "⚠️ Sync error")}  ${String(syncError).slice(0, 200)}`);
+  lines.push(
+    `${pick(lang, "🔐 操作権限", "🔐 Permission")}  \`${operatorRoleName || "CalendarOperator"}\` ${pick(lang, "ロール保持者・管理者", "role holders and administrators")}`,
+    `${pick(lang, "🧩 バージョン", "🧩 Version")}  \`v${appVersion}\`${instanceId ? `  ·  \`${instanceId}\`` : ""}`,
+  );
 
   return new EmbedBuilder()
-    .setColor(online ? 0x2b2d31 : 0x747f8d)
-    .setDescription(
-      `${online ? pick(lang, "🟢 **Bot稼働中**", "🟢 **Bot Online**") : pick(lang, "🔴 **Bot停止中**", "🔴 **Bot Offline**")}\n` +
-      `${pick(lang, "📆 今月", "📆 This month")}  **${events.length}${pick(lang, "件", "") }**  ${pick(lang, "残り", "Remaining")} **${upcoming.length}${pick(lang, "件", "") }**\n` +
-      `${pick(lang, "⏭️ 直近", "⏭️ Next")}  ${nextStr}\n` +
-      `${pick(lang, "🔃 最終同期", "🔃 Last sync")}  ${lastUpdated ? jst(lastUpdated) : pick(lang, "未取得", "Not synced")}\n` +
-      `${pick(lang, "🔐 操作権限", "🔐 Permission")}  \`${botRoleName || "CalendarOperator"}\` ${pick(lang, "ロール保持者・管理者", "role holders and administrators")}\n` +
-      `${pick(lang, "🧩 バージョン", "🧩 Version")}  \`v${appVersion}\``
-    );
+    .setColor(!online ? 0x747f8d : syncError ? 0xfee75c : 0x2b2d31)
+    .setDescription(lines.join("\n"));
 }
 
 function buildActionButtons(lang = "ja", options = {}) {
@@ -166,14 +182,22 @@ function buildActionButtons(lang = "ja", options = {}) {
   return new ActionRowBuilder().addComponents(...components);
 }
 
+/**
+ * 予定の選択メニュー。選択肢は Discord の上限で 25 件まで。
+ * 25 件を超える月は、終わった予定より「これからの予定」を優先して載せる。
+ */
 function buildSelectMenu(events, customId, placeholder, lang = "ja") {
   if (events.length === 0) return null;
-  const options = events.slice(0, 25).map(e => {
+  const sorted   = [...events].sort((a, b) => eventStartMs(a) - eventStartMs(b));
+  const upcoming = sorted.filter(e => isUpcomingEvent(e));
+  const past     = sorted.filter(e => !isUpcomingEvent(e));
+  const picked   = sorted.length <= 25 ? sorted : [...upcoming, ...past.reverse()].slice(0, 25).sort((a, b) => eventStartMs(a) - eventStartMs(b));
+  const options = picked.map(e => {
     const f = formatEvent(e, lang);
     return {
       label: (lang === "en" ? `${f.w} ${f.d} ${f.title}` : `${f.d}日(${f.w}) ${f.title}`).substring(0, 100),
-      description: (f.timeStr + (f.desc ? "　" + f.desc.replace(/\n　/,"") : "")).substring(0, 100),
-      value: e.id,
+      description: (f.timeStr + (f.desc ? "　" + f.desc.replace(/\n　/, "").replace(/\s+/g, " ") : "")).substring(0, 100),
+      value: toKey(e.id),
     };
   });
   return new ActionRowBuilder().addComponents(
@@ -186,24 +210,25 @@ function buildSelectMenu(events, customId, placeholder, lang = "ja") {
  * @returns {ActionRowBuilder[]} [roleSelectRow, specialRolesAndSkipRow]
  */
 function buildRoleSelectForNotify(eventId, lang = "ja") {
+  const key = toKey(eventId); // customId は 100 文字まで
   const roleRow = new ActionRowBuilder().addComponents(
     new RoleSelectMenuBuilder()
-      .setCustomId(`select_notify_role_${eventId}`)
+      .setCustomId(`select_notify_role_${key}`)
       .setPlaceholder(pick(lang, "🔔 通知するロールを選択", "🔔 Select a role to notify"))
       .setMinValues(1)
       .setMaxValues(1)
   );
   const userRow = new ActionRowBuilder().addComponents(
     new UserSelectMenuBuilder()
-      .setCustomId(`select_notify_user_${eventId}`)
+      .setCustomId(`select_notify_user_${key}`)
       .setPlaceholder(pick(lang, "👤 個人に通知するユーザーを選択", "👤 Select a user to notify"))
       .setMinValues(1)
       .setMaxValues(1)
   );
   const specialRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`btn_notify_everyone_${eventId}`).setLabel("@everyone").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`btn_notify_here_${eventId}`).setLabel("@here").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`btn_notify_skip_${eventId}`).setLabel(pick(lang, "スキップ（通知なし）", "Skip (No notification)")).setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`btn_notify_everyone_${key}`).setLabel("@everyone").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`btn_notify_here_${key}`).setLabel("@here").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`btn_notify_skip_${key}`).setLabel(pick(lang, "スキップ（通知なし）", "Skip (No notification)")).setStyle(ButtonStyle.Danger),
   );
   return [roleRow, userRow, specialRow];
 }
@@ -213,24 +238,26 @@ function buildRoleSelectForNotify(eventId, lang = "ja") {
  * @returns {ActionRowBuilder[]} [時間ボタン行1, 時間ボタン行2]
  */
 function buildNotifyTimeButtons(eventId, targetId, targetType = "role", lang = "ja") {
+  const key = toKey(eventId); // customId は 100 文字まで
   // ユーザーは btn_notify_u_ プレフィックス、ロールは btn_notify_t_
   const p = targetType === "user" ? "btn_notify_u" : "btn_notify_t";
   const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`${p}_${eventId}_${targetId}_10`).setLabel(lang === "en" ? "10m" : "10分前").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${p}_${eventId}_${targetId}_30`).setLabel(lang === "en" ? "30m" : "30分前").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${p}_${eventId}_${targetId}_60`).setLabel(lang === "en" ? "1h" : "1時間前").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${p}_${eventId}_${targetId}_180`).setLabel(lang === "en" ? "3h" : "3時間前").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${p}_${eventId}_${targetId}_360`).setLabel(lang === "en" ? "6h" : "6時間前").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${p}_${key}_${targetId}_10`).setLabel(lang === "en" ? "10m" : "10分前").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${p}_${key}_${targetId}_30`).setLabel(lang === "en" ? "30m" : "30分前").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${p}_${key}_${targetId}_60`).setLabel(lang === "en" ? "1h" : "1時間前").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${p}_${key}_${targetId}_180`).setLabel(lang === "en" ? "3h" : "3時間前").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${p}_${key}_${targetId}_360`).setLabel(lang === "en" ? "6h" : "6時間前").setStyle(ButtonStyle.Secondary),
   );
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`${p}_${eventId}_${targetId}_720`).setLabel(lang === "en" ? "12h" : "12時間前").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${p}_${eventId}_${targetId}_1440`).setLabel(lang === "en" ? "24h" : "24時間前").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`${p}_${eventId}_${targetId}_2880`).setLabel(lang === "en" ? "48h" : "48時間前").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${p}_${key}_${targetId}_720`).setLabel(lang === "en" ? "12h" : "12時間前").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${p}_${key}_${targetId}_1440`).setLabel(lang === "en" ? "24h" : "24時間前").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`${p}_${key}_${targetId}_2880`).setLabel(lang === "en" ? "48h" : "48時間前").setStyle(ButtonStyle.Secondary),
   );
   return [row1, row2];
 }
 
 function buildNoticeManageComponents(guildId, eventId, lang = "ja") {
+  const key = toKey(eventId); // customId は 100 文字まで
   const notices = getNoticesForEvent(guildId, eventId);
   const lines = [pick(lang, "📋 **現在の通知設定**", "📋 **Current notification settings**")];
   if (notices.length === 0) {
@@ -246,16 +273,16 @@ function buildNoticeManageComponents(guildId, eventId, lang = "ja") {
     });
   }
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`btn_nmgr_add_${eventId}`).setLabel(pick(lang, "➕ 追加", "➕ Add")).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`btn_nmgr_del_${eventId}`).setLabel(pick(lang, "🗑️ 削除", "🗑️ Delete")).setStyle(ButtonStyle.Danger).setDisabled(notices.length === 0),
-    new ButtonBuilder().setCustomId(`btn_nmgr_done_${eventId}`).setLabel(pick(lang, "✅ 完了", "✅ Done")).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`btn_nmgr_add_${key}`).setLabel(pick(lang, "➕ 追加", "➕ Add")).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`btn_nmgr_del_${key}`).setLabel(pick(lang, "🗑️ 削除", "🗑️ Delete")).setStyle(ButtonStyle.Danger).setDisabled(notices.length === 0),
+    new ButtonBuilder().setCustomId(`btn_nmgr_done_${key}`).setLabel(pick(lang, "✅ 完了", "✅ Done")).setStyle(ButtonStyle.Primary),
   );
   return { content: lines.join("\n"), components: [row] };
 }
 
 module.exports = {
   buildCalendarEmbed, buildCalendarButtons,
-  buildStatusEmbed, buildActionButtons, buildSelectMenu,
+  buildStatusEmbed, buildActionButtons, buildSelectMenu, isUpcomingEvent,
   buildRoleSelectForNotify, buildNotifyTimeButtons,
   buildNoticeManageComponents,
 };

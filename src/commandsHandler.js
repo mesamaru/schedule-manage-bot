@@ -1,6 +1,16 @@
-const { REST, Routes, PermissionFlagsBits, SlashCommandBuilder, MessageFlags } = require("discord.js");
-const { getMonthEvents, hashEvents } = require("./calendar");
+const { REST, Routes, PermissionFlagsBits, SlashCommandBuilder, MessageFlags, ChannelType } = require("discord.js");
 const { getLang, pick } = require("./i18n");
+const { loadState, saveState } = require("./storage");
+
+// 投稿先に選べるチャンネル（ボイス・カテゴリ・フォーラム等を選ぶと投稿に失敗するため絞る）
+const TEXT_CHANNEL_TYPES = [ChannelType.GuildText, ChannelType.GuildAnnouncement];
+// Bot が投稿先チャンネルで必要な権限
+const REQUIRED_PERMS = [
+  ["ViewChannel", "チャンネルを見る"],
+  ["SendMessages", "メッセージを送信"],
+  ["EmbedLinks", "埋め込みリンク"],
+  ["ReadMessageHistory", "メッセージ履歴を読む"],
+];
 
 function buildCommands() {
   const setupCommand = new SlashCommandBuilder()
@@ -8,13 +18,13 @@ function buildCommands() {
     .setDescription("このサーバーでスケジュール管理Botを設定します")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addChannelOption(opt =>
-      opt.setName("channel").setDescription("カレンダーを投稿するチャンネル").setRequired(true))
+      opt.setName("channel").setDescription("カレンダーを投稿するチャンネル").setRequired(true).addChannelTypes(...TEXT_CHANNEL_TYPES))
     .addStringOption(opt =>
       opt.setName("calendar_id").setDescription("Google Calendar ID").setRequired(true))
     .addChannelOption(opt =>
-      opt.setName("notify_channel").setDescription("通知送信先チャンネル（省略: カレンダーチャンネルと同じ）"))
+      opt.setName("notify_channel").setDescription("通知送信先チャンネル（省略: カレンダーチャンネルと同じ）").addChannelTypes(...TEXT_CHANNEL_TYPES))
     .addChannelOption(opt =>
-      opt.setName("log_channel").setDescription("操作ログ送信先チャンネル（省略: ログなし）"))
+      opt.setName("log_channel").setDescription("操作ログ送信先チャンネル（省略: ログなし）").addChannelTypes(...TEXT_CHANNEL_TYPES))
     .addStringOption(opt =>
       opt.setName("operator_role").setDescription("操作を許可するロール名（デフォルト: CalendarOperator）"));
 
@@ -65,11 +75,22 @@ function buildCommands() {
 async function registerGlobalCommands(client) {
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
   const commands = buildCommands();
-  await rest.put(Routes.applicationCommands(client.user.id), { body: commands.map(c => c.toJSON()) }).catch(console.error);
+  try {
+    await rest.put(Routes.applicationCommands(client.user.id), { body: commands.map(c => c.toJSON()) });
+    console.log(`[Commands] スラッシュコマンドを登録しました（${commands.length} 件）`);
+  } catch (err) {
+    console.error(`[Commands] スラッシュコマンドの登録に失敗: ${err.message}`);
+  }
+}
+
+/** Bot に足りない権限の一覧（日本語名）を返す */
+function missingPermissions(channel, me) {
+  const perms = channel?.permissionsFor?.(me);
+  if (!perms) return [];
+  return REQUIRED_PERMS.filter(([flag]) => !perms.has(PermissionFlagsBits[flag])).map(([, label]) => label);
 }
 
 function createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, getAllGuildIds, scheduler, runtime }) {
-  const { currentYM, sendSystemLog, isLogNotifyEnabled } = runtime;
 
   async function handleSetup(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -78,27 +99,41 @@ function createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, g
     const calendarId    = interaction.options.getString("calendar_id");
     const notifyChannel = interaction.options.getChannel("notify_channel");
     const logChannel    = interaction.options.getChannel("log_channel");
-    const operatorRole  = interaction.options.getString("operator_role") || "CalendarOperator";
+    const operatorRole  = (interaction.options.getString("operator_role") || "CalendarOperator").trim();
+    const previous      = loadConfig(interaction.guildId);
+
+    // 投稿先で必要な権限がなければ、保存する前に知らせる
+    const me = interaction.guild?.members?.me;
+    const lacking = [channel, notifyChannel, logChannel].filter(Boolean)
+      .flatMap(ch => missingPermissions(ch, me).map(p => `<#${ch.id}>: ${p}`));
+    if (lacking.length > 0) {
+      return interaction.editReply({
+        content: (setupLang === "en" ? "❌ The bot is missing permissions:\n" : "❌ Bot に次の権限がありません:\n") + lacking.map(l => `- ${l}`).join("\n"),
+      });
+    }
+
     const config = {
       channelId:        channel.id,
-      calendarId,
+      calendarId:       calendarId.trim(),
       notifyChannelId:  notifyChannel?.id || null,
       logChannelId:     logChannel?.id || null,
       logEnabled:       logChannel ? true : false,
-      language:         setupLang,
-      systemLogToggles: {
-        startup: true,
-        connection: true,
-        error: true,
-      },
+      // 再セットアップ時は既存の言語・ログ設定を引き継ぐ
+      language:         previous?.language || setupLang,
+      systemLogToggles: previous?.systemLogToggles || { startup: true, connection: true, error: true },
       operatorRoleName: operatorRole,
     };
-    saveConfig(interaction.guildId, config);
+    // 投稿先チャンネルが変わったら、旧チャンネルのメッセージ ID は使えないので捨てる
+    await scheduler.withGuildLock(interaction.guildId, async () => {
+      saveConfig(interaction.guildId, config);
+      if (previous && previous.channelId !== config.channelId) {
+        const st = loadState(interaction.guildId);
+        saveState(interaction.guildId, { calendarMessageId: null, statusMessageId: null, calendarRenderHash: null });
+        console.log(`[Setup][${interaction.guildId}] 投稿先変更のため旧メッセージ ID を破棄: ${st.calendarMessageId}, ${st.statusMessageId}`);
+      }
+    });
     try {
-      const { year, month } = currentYM();
-      const events = await getMonthEvents(calendarId, year, month);
-      saveStateSafe(interaction.guildId, hashEvents(events));
-      await scheduler.updateBoth(interaction.guildId, config, events, year, month);
+      await scheduler.sync(interaction.guildId, config, { force: true, isFirst: true });
       const serviceEmail = process.env.GOOGLE_CLIENT_EMAIL || "（未設定）";
       await interaction.editReply({
         content:
@@ -129,18 +164,13 @@ function createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, g
     }
   }
 
-  function saveStateSafe(guildId, lastHash) {
-    const { saveState } = require("./storage");
-    saveState(guildId, { lastHash, updatedAt: new Date().toISOString() });
-  }
-
   async function handleRemoveSetup(interaction) {
     const config = loadConfig(interaction.guildId);
     if (!config) {
       const lang = interaction.locale?.toLowerCase().startsWith("en") ? "en" : "ja";
       return interaction.reply({ content: lang === "en" ? "ℹ️ This server is not set up yet." : "ℹ️ このサーバーはまだセットアップされていません。", flags: MessageFlags.Ephemeral });
     }
-    deleteConfig(interaction.guildId);
+    await scheduler.withGuildLock(interaction.guildId, async () => deleteConfig(interaction.guildId));
     return interaction.reply({ content: getLang(config) === "en" ? "✅ Removed this server's setup." : "✅ このサーバーの設定を削除しました。", flags: MessageFlags.Ephemeral });
   }
 
@@ -184,10 +214,12 @@ function createCommandsHandler({ client, loadConfig, saveConfig, deleteConfig, g
     const selected = interaction.options.getString("lang", true);
     config.language = selected;
     saveConfig(interaction.guildId, config);
-    return interaction.reply({
+    await interaction.reply({
       content: selected === "en" ? "✅ Bot language set to **English**." : "✅ Botの表示言語を **日本語** に設定しました。",
       flags: MessageFlags.Ephemeral,
     });
+    // カレンダー・ステータスの表示言語もすぐに切り替える
+    scheduler.sync(interaction.guildId, config, { force: true, notify: false }).catch(() => {});
   }
 
   async function handleChatInputCommand(interaction) {
