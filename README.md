@@ -493,6 +493,10 @@ npm run update
 npm start
 ```
 
+> ⚠️ **Pterodactyl の起動コマンドについて**  
+> よく使われる Node.js Egg の起動コマンドには `if [[ "${MAIN_FILE}" == "*.js" ]]` という判定がありますが、`"*.js"` がクォートされているため **常に偽** になり、`.js` ファイルでも `ts-node --esm` で起動されます。動きはしますが起動が遅く無駄なので、スタートアップの **MAIN_FILE を `src/index.js`** にしたうえで、起動コマンドの該当部分を `node "/home/container/${MAIN_FILE}"` にするか、判定をクォートなしの `[[ "${MAIN_FILE}" == *.js ]]` に直すのがおすすめです。  
+> また `NODE_PACKAGES` 変数は空にしておいてください（起動のたびに `package.json` が書き換わります）。
+
 ---
 
 ## トラブルシューティング
@@ -541,10 +545,15 @@ npm start
 
 ---
 
-### ❌ `This interaction failed` とだけ表示される
+### ❌ `This interaction failed` / ログに `DiscordAPIError[10062]: Unknown interaction` が出る
 
-**原因:** Bot が応答する前に 3秒のタイムアウトが発生した  
-**対処:** Bot のレスポンスが遅い場合は Fly.io のリージョンを確認（日本なら `nrt`）
+**原因1（最有力）:** 同じ Bot トークンで **複数のプロセスが同時に動いている**（例: Fly.io と Pterodactyl の両方、ローカルでの `npm start` の消し忘れ）  
+ボタンを押すと両方のプロセスに届き、先に応答した方だけが成功し、もう片方が `Unknown interaction` になります。カレンダー／ステータスの重複投稿もこれで起きます。  
+**確認:** v8.4.0 以降はステータスの「🧩 バージョン」の横にプロセスID（`ホスト名/xxxx`）が表示され、別プロセスがステータスを書き換えるとログ（とログチャンネル）に `[Duplicate] 別プロセス…` と出ます。  
+**対処:** 使わない方を停止する。Fly.io を使わないなら `fly scale count 0` または `fly apps destroy <app名>`。この README の GitHub Actions（`.github/workflows/fly-deploy.yml`）は main への push のたびに Fly.io へデプロイするので、不要なら削除するか `FLY_API_TOKEN` シークレットを消す。心当たりがなければ Discord Developer Portal で Bot トークンを再発行する
+
+**原因2:** Bot が応答する前に 3 秒の期限を過ぎた（v8.4.0 で、Google への問い合わせより先に必ず応答枠を確保するよう修正済み）  
+ログの `経過 ◯ms` が 3000 以上なら、再接続直後に古い操作が届いたなどのケースです。そのときは押し直せば動きます
 
 ---
 

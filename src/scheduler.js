@@ -1,13 +1,15 @@
 const { RESTJSONErrorCodes } = require("discord.js");
-const { getMonthEvents, hashEvents } = require("./calendar");
+const { getMonthEvents, hashString } = require("./calendar");
 const { buildCalendarEmbed, buildCalendarButtons, buildStatusEmbed, buildActionButtons } = require("./embed");
 const { loadState, saveState } = require("./storage");
 const { checkAndFireNotices, sweepPendingDeletes } = require("./notifier");
 const { getLang } = require("./i18n");
-const { currentYM } = require("./runtime");
+const { currentYM, INSTANCE_ID, fmtTimestamp, sendSystemLog } = require("./runtime");
 
 // state.json を失ったときに備え、直近この件数のメッセージから自分の投稿を探して引き継ぐ
 const ADOPT_SCAN_LIMIT = 50;
+// 別プロセス検出の警告をログチャンネルへ送る間隔
+const DUPLICATE_WARN_INTERVAL_MS = 60 * 60 * 1000;
 
 // Bot が常設で管理するメッセージ。
 // marker      : 種類を見分けるためのボタン customId（通常はこれで判別する）
@@ -48,29 +50,72 @@ function hasMarker(message, marker) {
     (row.components || []).some(component => component.customId === marker));
 }
 
-/**
- * このメッセージが該当種別の管理対象かどうか。
- * 通常はボタンの customId（marker）で判別するが、v8.3.0 より前の停止処理は
- * ボタンを丸ごと削除していたため、その残骸は matchEmbed（Embed の内容）で拾う。
- */
 function matchesManaged(message, descriptor) {
   if (hasMarker(message, descriptor.marker)) return true;
   const embed = message.embeds?.[0];
   return Boolean(embed && descriptor.matchEmbed?.(embed));
 }
 
+/** Embed の見た目が変わったかを判定するためのハッシュ（タイムスタンプは除外） */
+function hashPayload(payload) {
+  const json = JSON.stringify({
+    embeds: (payload.embeds || []).map(e => { const j = e.toJSON ? e.toJSON() : e; const { timestamp, ...rest } = j; return rest; }),
+    components: (payload.components || []).map(c => (c.toJSON ? c.toJSON() : c)),
+  });
+  return hashString(json);
+}
+
+function summarizeRunError(err, calendarId) {
+  const code = err?.code || err?.status || err?.response?.status;
+  const reason = err?.errors?.[0]?.reason || err?.response?.data?.error?.errors?.[0]?.reason;
+  const message = err?.errors?.[0]?.message || err?.message || "unknown error";
+  if (code === 404 && reason === "notFound") {
+    return `Google Calendar not found or not shared (calendarId: ${calendarId}). Check calendar_id and service-account sharing.`;
+  }
+  return `${message} (code=${code ?? "n/a"}${reason ? `, reason=${reason}` : ""})`;
+}
+
 function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
-  const guildRunning = new Map();
   const cronSchedule = config.cronSchedule || process.env.CRON_SCHEDULE || "*/5 * * * *";
 
-  function summarizeRunError(err, calendarId) {
-    const code = err?.code || err?.status || err?.response?.status;
-    const reason = err?.errors?.[0]?.reason || err?.response?.data?.error?.errors?.[0]?.reason;
-    const message = err?.errors?.[0]?.message || err?.message || "unknown error";
-    if (code === 404 && reason === "notFound") {
-      return `Google Calendar not found or not shared (calendarId: ${calendarId}). Check calendar_id and service-account sharing.`;
-    }
-    return `${message} (code=${code ?? "n/a"}${reason ? `, reason=${reason}` : ""})`;
+  // ── ギルド単位の排他制御 ──────────────────────────────
+  // 以前は cron の実行中フラグを見るだけで、ボタン・モーダル・起動時の処理は素通りしていた。
+  // 同時に走ると両方が「メッセージがない」と判断して二重投稿したり、
+  // state.json / notices.json を読み書きで上書きし合ったりする。
+  // ここでは Promise をつないで、同じギルドの同期処理を必ず 1 本ずつ実行する。
+  const guildQueues = new Map();
+  const guildBusy   = new Set();
+
+  function withGuildLock(guildId, fn) {
+    const prev = guildQueues.get(guildId) || Promise.resolve();
+    const next = prev.catch(() => {}).then(async () => {
+      guildBusy.add(guildId);
+      try { return await fn(); } finally { guildBusy.delete(guildId); }
+    });
+    const tail = next.catch(() => {});
+    guildQueues.set(guildId, tail);
+    tail.then(() => { if (guildQueues.get(guildId) === tail) guildQueues.delete(guildId); });
+    return next;
+  }
+
+  // ── 別プロセス検出 ───────────────────────────────────
+  // このプロセスが一度でも更新したステータスメッセージに、別の INSTANCE_ID が書かれていたら
+  // 同じトークンで別の場所（Fly.io と Pterodactyl など）が同時に動いている。
+  // その状態だとボタン押下が両方に届き、片方が「Unknown interaction」で失敗する。
+  const editedStatusOnce = new Set();
+  const lastDuplicateWarn = new Map();
+
+  function detectOtherInstance(guildId, message, guildConfig) {
+    const desc = message?.embeds?.[0]?.description || "";
+    const m = desc.match(/v[\d.]+`\s+·\s+`([^`]+)`/);
+    if (!m || m[1] === INSTANCE_ID || !editedStatusOnce.has(guildId)) return;
+    const other = m[1];
+    console.error(`[Duplicate][${guildId}] 別プロセス（${other}）が同じ Bot トークンで稼働しています。このプロセス: ${INSTANCE_ID}`);
+    const last = lastDuplicateWarn.get(guildId) || 0;
+    if (Date.now() - last < DUPLICATE_WARN_INTERVAL_MS) return;
+    lastDuplicateWarn.set(guildId, Date.now());
+    sendSystemLog(client, 0xed4245, "duplicate", { other, self: INSTANCE_ID, ts: fmtTimestamp() }, "error",
+      () => [guildId], () => guildConfig).catch(() => {});
   }
 
   /** チャンネル内から、Bot 自身が投稿した該当種別のメッセージを新しい順に返す */
@@ -83,18 +128,26 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
     }
   }
 
+  async function fetchChannel(channelId) {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel?.isTextBased?.()) throw new Error(`チャンネルにアクセスできません（channelId: ${channelId}）`);
+    return channel;
+  }
+
   /**
    * 常設メッセージを更新する。Discord 上から消えている場合のみ作り直す。
    * state を失っていても、チャンネルに残っている自分の投稿を引き継いで重複投稿を防ぐ。
+   * ※ 必ず withGuildLock の中から呼ぶこと
    */
-  async function upsertManagedMessage(kind, guildId, channel, payload) {
+  async function upsertManagedMessage(kind, guildId, channel, payload, { onFetched } = {}) {
     const descriptor = MANAGED_MESSAGES[kind];
     const { stateKey, label } = descriptor;
     const trackedId = loadState(guildId)[stateKey];
 
     if (trackedId) {
       try {
-        const msg = await channel.messages.fetch(trackedId);
+        const msg = await channel.messages.fetch({ message: trackedId, force: true });
+        onFetched?.(msg);
         await msg.edit(payload);
         return msg;
       } catch (err) {
@@ -126,29 +179,41 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
     return sent;
   }
 
-  async function upsertCalendarMessage(guildId, guildConfig, events, year, month) {
+  async function upsertCalendarMessage(guildId, guildConfig, events, year, month, { force = false } = {}) {
     const lang = getLang(guildConfig);
-    const channel = await client.channels.fetch(guildConfig.channelId);
-    await upsertManagedMessage("calendar", guildId, channel, {
+    const payload = {
       embeds: [buildCalendarEmbed(guildId, events, year, month, lang)],
       components: [buildCalendarButtons(year, month, lang)],
-    });
+    };
+    // 予定・通知設定・言語・「今日」マーク・月のいずれかが変われば見た目が変わる。
+    // 以前は予定の更新日時だけをハッシュしていたため、月替わり（両月とも予定なし）や
+    // 通知設定の変更、/language の変更がカレンダーに反映されなかった。
+    const renderHash = hashPayload(payload);
+    const state = loadState(guildId);
+    if (!force && state.calendarMessageId && state.calendarRenderHash === renderHash) return;
+    const channel = await fetchChannel(guildConfig.channelId);
+    const msg = await upsertManagedMessage("calendar", guildId, channel, payload);
+    if (msg) saveState(guildId, { calendarRenderHash: renderHash });
   }
 
-  async function upsertStatusMessage(guildId, guildConfig, events, upcomingSource = events) {
-    const lang = getLang(guildConfig);
-    const channel = await client.channels.fetch(guildConfig.channelId);
+  async function upsertStatusMessage(guildId, guildConfig, { events = [], upcomingSource = events, syncError = null } = {}) {
+    const lang    = getLang(guildConfig);
+    const channel = await fetchChannel(guildConfig.channelId);
     const state   = loadState(guildId);
-    await upsertManagedMessage("status", guildId, channel, {
-      embeds: [buildStatusEmbed(guildId, events, state.updatedAt, guildConfig.operatorRoleName, true, lang, upcomingSource)],
+    const msg = await upsertManagedMessage("status", guildId, channel, {
+      embeds: [buildStatusEmbed(guildId, {
+        events, upcomingSource, lastUpdated: state.updatedAt, operatorRoleName: guildConfig.operatorRoleName,
+        online: true, lang, syncError, instanceId: INSTANCE_ID,
+      })],
       components: [buildActionButtons(lang)],
-    });
+    }, { onFetched: (m) => detectOtherInstance(guildId, m, guildConfig) });
+    if (msg) editedStatusOnce.add(guildId);
   }
 
   /** 過去に重複投稿されてしまった常設メッセージを片付ける（現行のものは残す） */
   async function cleanupDuplicateMessages(guildId, guildConfig) {
     const channel = await client.channels.fetch(guildConfig.channelId).catch(() => null);
-    if (!channel) return;
+    if (!channel?.isTextBased?.()) return;
     const state = loadState(guildId);
     for (const descriptor of Object.values(MANAGED_MESSAGES)) {
       const { stateKey, label } = descriptor;
@@ -166,74 +231,96 @@ function createScheduler({ client, getAllGuildIds, loadConfig, config = {} }) {
     }
   }
 
-  async function updateBoth(guildId, guildConfig, events, year, month, upcomingSource = events) {
-    await upsertCalendarMessage(guildId, guildConfig, events, year, month);
-    await upsertStatusMessage(guildId, guildConfig, events, upcomingSource);
-  }
-
-  async function run(guildId, guildConfig, isFirst = false, force = false) {
-    if (guildRunning.get(guildId) && !isFirst) {
-      console.warn(`[Cron][${guildId}] スキップ`);
-      return;
-    }
-    guildRunning.set(guildId, true);
+  /**
+   * 1 ギルド分の同期本体（ロック内で実行される）。
+   * 今月＋来月の予定を取得し、カレンダー・ステータスを更新し、通知を送る。
+   */
+  async function doSync(guildId, guildConfig, { isFirst = false, force = false, notify = true } = {}) {
     const ts = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-    console.log(`[${ts}][${guildId}] チェック開始`);
+    console.log(`[${ts}][${guildId}] チェック開始${isFirst ? "（起動時）" : ""}`);
     try {
       const { year, month } = currentYM();
-      const next    = month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 };
-      const events  = await getMonthEvents(guildConfig.calendarId, year, month);
-      // 月末に「直近の予定」が消えないよう翌月分も見る。通知判定にも使い回す
-      const nextEvents = await getMonthEvents(guildConfig.calendarId, next.year, next.month).catch(() => []);
-      const horizon = [...events, ...nextEvents];
-      const newHash = hashEvents(events);
-      const state   = loadState(guildId);
-      const syncedAt = new Date().toISOString();
-      if (isFirst || !state.lastHash || force || state.lastHash !== newHash) {
-        // Save latest sync timestamp first so status embed always shows the current run time.
-        saveState(guildId, { lastHash: newHash, updatedAt: syncedAt });
-        await updateBoth(guildId, guildConfig, events, year, month, horizon);
-      } else {
-        // Even when no event diff exists, keep the "last sync" timestamp fresh.
-        saveState(guildId, { updatedAt: syncedAt });
-        await upsertStatusMessage(guildId, guildConfig, events, horizon);
-      }
+      const next = month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 };
+      const [events, nextEvents] = await Promise.all([
+        getMonthEvents(guildConfig.calendarId, year, month),
+        // 月末に「直近の予定」が消えないよう翌月分も見る。通知判定にも使い回す
+        getMonthEvents(guildConfig.calendarId, next.year, next.month).catch((err) => {
+          console.warn(`[Run][${guildId}] 翌月分の取得に失敗: ${err.message}`);
+          return [];
+        }),
+      ]);
+      const seen = new Set(events.map(e => e.id));
+      const horizon = [...events, ...nextEvents.filter(e => !seen.has(e.id))];
+
+      saveState(guildId, { updatedAt: new Date().toISOString(), lastError: null });
+      await upsertCalendarMessage(guildId, guildConfig, events, year, month, { force: isFirst || force });
+      await upsertStatusMessage(guildId, guildConfig, { events, upcomingSource: horizon });
       if (isFirst) await cleanupDuplicateMessages(guildId, guildConfig).catch(() => {});
-      await checkAndFireNotices(client, guildId, guildConfig, horizon);
+      if (notify) await checkAndFireNotices(client, guildId, guildConfig, horizon);
     } catch (err) {
-      const syncedAt = new Date().toISOString();
-      saveState(guildId, { updatedAt: syncedAt });
-      // Keep status embed fresh even if calendar fetch fails, so operators can notice current bot state/version.
-      await upsertStatusMessage(guildId, guildConfig, []).catch((statusErr) => {
+      const summary = summarizeRunError(err, guildConfig.calendarId);
+      console.error(`[Run][${guildId}] ${summary}`);
+      // 「最終同期」は成功時刻のまま残し、エラーを別行で表示する
+      saveState(guildId, { lastError: summary, lastErrorAt: new Date().toISOString() });
+      await upsertStatusMessage(guildId, guildConfig, { syncError: summary }).catch((statusErr) => {
         console.error(`[Run][${guildId}] Status update failed: ${statusErr.message}`);
       });
-      console.error(`[Run][${guildId}] ${summarizeRunError(err, guildConfig.calendarId)}`);
+      throw err;
     } finally {
       // 再起動を挟んでも消えないよう、通知の自動削除は永続キューから掃除する
       await sweepPendingDeletes(client, guildId).catch(() => {});
-      guildRunning.set(guildId, false);
     }
   }
 
+  /**
+   * 同期を実行する（ボタン・モーダル・コマンドからはこれを呼ぶ）。
+   * 実行中の同期があれば終わるのを待ってから実行する。
+   */
+  function sync(guildId, guildConfig, options = {}) {
+    return withGuildLock(guildId, () => doSync(guildId, guildConfig, options));
+  }
+
+  /** cron 用。前回の同期がまだ終わっていなければスキップする */
+  async function run(guildId, guildConfig, isFirst = false, force = false) {
+    if (!isFirst && (guildBusy.has(guildId) || guildQueues.has(guildId))) {
+      console.warn(`[Cron][${guildId}] 前回の同期が実行中のためスキップ`);
+      return;
+    }
+    return sync(guildId, guildConfig, { isFirst, force });
+  }
+
+  let cronTask = null;
   function startCron() {
+    if (cronTask) return;
     const cron = require("node-cron");
-    cron.schedule(cronSchedule, async () => {
+    if (!cron.validate(cronSchedule)) {
+      console.error(`[Cron] CRON_SCHEDULE が不正です: "${cronSchedule}"。既定値 */5 * * * * を使います`);
+    }
+    cronTask = cron.schedule(cron.validate(cronSchedule) ? cronSchedule : "*/5 * * * *", async () => {
+      if (!client.isReady()) return;
       for (const gid of getAllGuildIds()) {
         const cfg = loadConfig(gid);
-        if (cfg) run(gid, cfg, false).catch(console.error);
+        if (cfg) run(gid, cfg, false).catch(() => {});
       }
     }, { timezone: "Asia/Tokyo" });
     console.log(`[Cron] 登録完了: "${cronSchedule}"`);
   }
 
+  function stopCron() {
+    cronTask?.stop();
+    cronTask = null;
+  }
+
   return {
     cronSchedule,
     run,
-    updateBoth,
+    sync,
+    withGuildLock,
     upsertCalendarMessage,
     upsertStatusMessage,
     cleanupDuplicateMessages,
     startCron,
+    stopCron,
   };
 }
 

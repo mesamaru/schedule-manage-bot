@@ -16,49 +16,36 @@
  */
 const fs   = require("fs");
 const path = require("path");
+const { readJson, writeJsonAtomic } = require("./fsutil");
 
 const DATA = path.join(__dirname, "../data");
 
 function configPath(guildId) {
-  return path.join(DATA, guildId, "config.json");
+  return path.join(DATA, String(guildId), "config.json");
 }
 
-/**
- * @param {string} guildId
- * @returns {{ channelId, calendarId, notifyChannelId, logChannelId, logEnabled, language, operatorRoleName } | null}
- */
+/** @returns {object|null} */
 function loadConfig(guildId) {
-  try {
-    const p = configPath(guildId);
-    if (!fs.existsSync(p)) return null;
-    return JSON.parse(fs.readFileSync(p, "utf-8"));
-  } catch { return null; }
+  if (!guildId) return null;
+  const cfg = readJson(configPath(guildId), null);
+  return cfg && typeof cfg === "object" && cfg.channelId && cfg.calendarId ? cfg : null;
 }
 
 function saveConfig(guildId, data) {
-  const dir = path.join(DATA, guildId);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(configPath(guildId), JSON.stringify(data, null, 2), "utf-8");
+  writeJsonAtomic(configPath(guildId), data);
 }
 
 function deleteConfig(guildId) {
-  const dir = path.join(DATA, guildId);
   try {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(path.join(DATA, String(guildId)), { recursive: true, force: true });
   } catch {}
 }
 
-/**
- * config.json が存在するギルドIDの一覧を返す
- * @returns {string[]}
- */
+/** config.json が存在するギルドIDの一覧 */
 function getAllGuildIds() {
   try {
     if (!fs.existsSync(DATA)) return [];
-    return fs.readdirSync(DATA).filter(f => {
-      const p = path.join(DATA, f, "config.json");
-      return fs.existsSync(p);
-    });
+    return fs.readdirSync(DATA).filter(f => /^\d+$/.test(f) && fs.existsSync(configPath(f)));
   } catch { return []; }
 }
 

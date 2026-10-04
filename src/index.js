@@ -39,20 +39,21 @@ function attachPanelCommands(app) {
 			env: process.env,
 		});
 
-		updater.on("exit", async (code) => {
+		// 更新後は終了してパネルの自動再起動に任せる。停止表示（ボタン無効化）を経由して終了する
+		// 失敗したときは今のバージョンのまま動かし続ける
+		updater.on("exit", (code) => {
 			console.log(`[panel] update finished with code ${code ?? 1}`);
-			try {
-				await app.client.destroy();
-			} catch {}
-			process.exit(code ?? 1);
+			if (code !== 0) {
+				console.error("[panel] update failed; keep running the current version");
+				updateRunning = false;
+				return;
+			}
+			app.lifecycle.gracefulShutdown("update", 0).catch(() => process.exit(0));
 		});
 
-		updater.on("error", async (error) => {
+		updater.on("error", (error) => {
 			console.error(`[panel] update failed: ${error.message}`);
-			try {
-				await app.client.destroy();
-			} catch {}
-			process.exit(1);
+			updateRunning = false;
 		});
 	});
 

@@ -8,45 +8,49 @@ function createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler
 
   let isShuttingDown = false;
 
-  async function gracefulShutdown(signal) {
+  async function gracefulShutdown(signal, exitCode = 0) {
     if (isShuttingDown) return;
     isShuttingDown = true;
     const ts = fmtTimestamp();
     console.log(`[${signal}] シャットダウン開始...`);
     const timer = setTimeout(() => { console.error("[Shutdown] タイムアウト"); process.exit(1); }, 10000);
+    scheduler.stopCron();
     try {
       await sendSystemLog(client, 0xed4245, "shutdown", { signal, ts }, "startup", getAllGuildIds, loadConfig).catch(() => {});
       for (const gid of getAllGuildIds()) {
         const cfg = loadConfig(gid);
         if (!cfg) continue;
-        const state   = loadState(gid);
-        const channel = await client.channels.fetch(cfg.channelId).catch(() => null);
-        if (!channel) continue;
-        const lang = getLang(cfg);
-        const { year, month } = runtime.currentYM();
-        // ボタンは削除せず「無効化」する。削除すると customId が消え、次回起動時に
-        // 自分が管理しているメッセージだと判別できず重複投稿になる
-        if (state.statusMessageId) {
-          try {
-            const msg = await channel.messages.fetch(state.statusMessageId);
-            await msg.edit({
-              embeds: [buildStatusEmbed(gid, [], state.updatedAt, cfg.operatorRoleName, false, lang)],
-              components: [buildActionButtons(lang, { disabled: true })],
-            });
-          } catch (e) { console.error(`[Shutdown][${gid}]`, e.message); }
-        }
-        if (state.calendarMessageId) {
-          try {
-            const msg = await channel.messages.fetch(state.calendarMessageId);
-            await msg.edit({ components: [buildCalendarButtons(year, month, lang, { disabled: true })] });
-          } catch (e) { console.error(`[Shutdown][${gid}]`, e.message); }
-        }
+        // 実行中の同期が終わってから「停止中」にする（後から同期が「稼働中」で上書きしないように）
+        await scheduler.withGuildLock(gid, async () => {
+          const state   = loadState(gid);
+          const channel = await client.channels.fetch(cfg.channelId).catch(() => null);
+          if (!channel?.isTextBased?.()) return;
+          const lang = getLang(cfg);
+          const { year, month } = runtime.currentYM();
+          // ボタンは削除せず「無効化」する。削除すると customId が消え、次回起動時に
+          // 自分が管理しているメッセージだと判別できず重複投稿になる
+          if (state.statusMessageId) {
+            try {
+              const msg = await channel.messages.fetch(state.statusMessageId);
+              await msg.edit({
+                embeds: [buildStatusEmbed(gid, { lastUpdated: state.updatedAt, operatorRoleName: cfg.operatorRoleName, online: false, lang })],
+                components: [buildActionButtons(lang, { disabled: true })],
+              });
+            } catch (e) { console.error(`[Shutdown][${gid}]`, e.message); }
+          }
+          if (state.calendarMessageId) {
+            try {
+              const msg = await channel.messages.fetch(state.calendarMessageId);
+              await msg.edit({ components: [buildCalendarButtons(year, month, lang, { disabled: true })] });
+            } catch (e) { console.error(`[Shutdown][${gid}]`, e.message); }
+          }
+        });
       }
     } catch (err) { console.error("[Shutdown] エラー:", err.message); }
     clearTimeout(timer);
     await client.destroy().catch(() => {});
     await logger.close();
-    process.exit(0);
+    process.exit(exitCode);
   }
 
   function setupLifecycle() {
@@ -61,12 +65,15 @@ function createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler
       console.log(`  PID: ${process.pid}`);
       console.log(`  CWD: ${process.cwd()}`);
       console.log("========================================");
-      await registerGlobalCommands();
+      console.log(`  インスタンス: ${runtime.INSTANCE_ID}`);
+      // コマンド登録の完了を待たずに同期を始める（ボタン操作の受付を遅らせない）
+      registerGlobalCommands().catch(() => {});
       const guildIds = getAllGuildIds();
       console.log(`[起動] 設定済みギルド数: ${guildIds.length}`);
       for (const gid of guildIds) {
         const cfg = loadConfig(gid);
-        if (cfg) scheduler.run(gid, cfg, true).catch(console.error);
+        // エラーは scheduler 側でログ済み
+        if (cfg) scheduler.run(gid, cfg, true).catch(() => {});
       }
       scheduler.startCron();
 
@@ -81,7 +88,9 @@ function createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler
     });
 
     client.on("guildDelete", (guild) => {
-      require("./guildConfig").deleteConfig(guild.id);
+      // サーバー障害で一時的に見えなくなっただけ（unavailable）のときは消さない
+      if (guild.available === false) return;
+      scheduler.withGuildLock(guild.id, async () => require("./guildConfig").deleteConfig(guild.id)).catch(() => {});
       console.log(`[GuildDelete] 設定削除: ${guild.id}`);
     });
 
@@ -109,7 +118,7 @@ function createLifecycle({ client, logger, loadConfig, getAllGuildIds, scheduler
     process.on("SIGTERM", () => gracefulShutdown("SIGTERM").catch(() => process.exit(1)));
     process.on("SIGINT",  () => gracefulShutdown("SIGINT").catch(() =>  process.exit(1)));
     process.on("SIGHUP",  () => gracefulShutdown("SIGHUP").catch(() =>  process.exit(1)));
-    process.on("unhandledRejection", (r) => console.error("[UnhandledRejection]", r));
+    process.on("unhandledRejection", (r) => console.error("[UnhandledRejection]", r?.stack || r));
     process.on("uncaughtException",  (e) => console.error("[UncaughtException]",  e));
   }
 
